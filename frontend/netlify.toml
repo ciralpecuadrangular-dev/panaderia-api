@@ -1,0 +1,7 @@
+# netlify.toml — PanaderIA App
+# Subir SOLO la carpeta /frontend a Netlify
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
