@@ -425,34 +425,46 @@ function Dashboard() {
   );
 }
 
-// ── Bodega ────────────────────────────────────────────────────────────────────
-function Bodega({ showToast }) {
-  const [saldos, setSaldos]     = useState([]);
-  const [movs,   setMovs]       = useState([]);
-  const [tab,    setTab]        = useState("saldos");
-  const [loading, setLoading]   = useState(false);
-  const [form,   setForm]       = useState({
-    fecha: new Date().toLocaleDateString("es-CO").split("/").reverse().join("/").replace(/\//g,"/"),
-    tipo: "ENTRADA", materia_nombre: "", cantidad: "", valor_total: "", responsable: "", sede_nombre: ""
-  });
-  const [sedes, setSedes] = useState([]);
+// ── Bodega (con categorías segmentadas) ───────────────────────────────────────
+const BODEGAS = [
+  { key: "MATERIAS_PRIMAS", label: "Ingredientes",     icon: "🧂" },
+  { key: "EMPAQUE",         label: "Mat. Empaque",     icon: "📦" },
+  { key: "CAFETERIA",       label: "Bebidas/Cafetería",icon: "☕" },
+  { key: "FRIOS",           label: "Prod. Fríos",      icon: "❄️" },
+  { key: "PUNTO_VENTA",     label: "Punto Venta",      icon: "🏪" },
+];
 
+function Bodega({ showToast, categoriaInicial }) {
+  const categoria = categoriaInicial || "MATERIAS_PRIMAS";
+  const bodegaInfo = BODEGAS.find(b => b.key === categoria) || BODEGAS[0];
+
+  const [saldos, setSaldos]   = useState([]);
+  const [movs,   setMovs]     = useState([]);
+  const [tab,    setTab]      = useState("saldos");
+  const [loading, setLoading] = useState(false);
+  const [sedes,  setSedes]    = useState([]);
   const hoy = new Date();
   const fechaHoy = `${String(hoy.getDate()).padStart(2,"0")}/${String(hoy.getMonth()+1).padStart(2,"0")}/${hoy.getFullYear()}`;
+  const [form, setForm] = useState({
+    fecha: fechaHoy, tipo: "ENTRADA", materia_nombre: "", cantidad: "",
+    valor_total: "", responsable: "", sede_nombre: "", bodega_categoria: categoria
+  });
 
   useEffect(() => {
-    cargarSaldos();
-    cargarMovs();
+    cargarSaldos(); cargarMovs();
     apiFetch("/sedes").then(setSedes).catch(() => {});
-  }, []);
+    setForm(f => ({ ...f, bodega_categoria: categoria }));
+  }, [categoria]);
 
   const cargarSaldos = () => {
     setLoading(true);
-    apiFetch("/bodega/saldos").then(d => { setSaldos(d); setLoading(false); }).catch(() => setLoading(false));
+    apiFetch(`/bodega/saldos?categoria=${categoria}`)
+      .then(d => { setSaldos(d); setLoading(false); })
+      .catch(() => setLoading(false));
   };
 
   const cargarMovs = () => {
-    apiFetch("/bodega/movimientos").then(setMovs).catch(() => {});
+    apiFetch(`/bodega/movimientos?categoria=${categoria}`).then(setMovs).catch(() => {});
   };
 
   const registrar = async (e) => {
@@ -465,7 +477,8 @@ function Bodega({ showToast }) {
           ...form,
           fecha: form.fecha || fechaHoy,
           cantidad: parseFloat(form.cantidad),
-          valor_total: form.tipo === "ENTRADA" ? parseFloat(form.valor_total || 0) : 0
+          valor_total: form.tipo === "ENTRADA" ? parseFloat(form.valor_total || 0) : 0,
+          bodega_categoria: categoria
         })
       });
       showToast("Movimiento registrado ✅");
@@ -476,7 +489,23 @@ function Bodega({ showToast }) {
 
   return (
     <div className="space-y-5">
-      <h2 className="text-xl font-bold text-gray-800">📦 Bodega e Inventario</h2>
+      <div className="flex items-center gap-3">
+        <span className="text-2xl">{bodegaInfo.icon}</span>
+        <h2 className="text-xl font-bold text-gray-800">Bodega — {bodegaInfo.label}</h2>
+      </div>
+
+      {/* Sub-tabs de bodegas */}
+      <div className="flex gap-1 flex-wrap">
+        {BODEGAS.map(b => (
+          <span key={b.key}
+            className={`px-3 py-1 rounded-full text-xs font-semibold border cursor-default
+              ${b.key === categoria
+                ? "bg-yellow-500 text-white border-yellow-500"
+                : "bg-white text-gray-500 border-gray-200"}`}>
+            {b.icon} {b.label}
+          </span>
+        ))}
+      </div>
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-gray-200">
@@ -493,7 +522,7 @@ function Bodega({ showToast }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-gray-600">
                 <tr>
-                  <th className="text-left p-3 font-semibold">Materia Prima</th>
+                  <th className="text-left p-3 font-semibold">Item</th>
                   <th className="text-right p-3 font-semibold">Saldo (g)</th>
                   <th className="text-right p-3 font-semibold">Saldo (kg)</th>
                   <th className="text-right p-3 font-semibold">Costo / g</th>
@@ -516,7 +545,7 @@ function Bodega({ showToast }) {
                     </td>
                   </tr>
                 ))}
-                {saldos.length === 0 && <tr><td colSpan={6} className="text-center text-gray-400 p-8">Sin registros en bodega</td></tr>}
+                {saldos.length === 0 && <tr><td colSpan={6} className="text-center text-gray-400 p-8">Sin registros en esta bodega</td></tr>}
               </tbody>
               <tfoot className="bg-gray-50">
                 <tr>
@@ -533,7 +562,7 @@ function Bodega({ showToast }) {
       {/* Registrar Movimiento */}
       {tab === "movimiento" && (
         <div className="card p-6 max-w-lg">
-          <h3 className="font-semibold text-gray-700 mb-4">Nuevo Movimiento de Bodega</h3>
+          <h3 className="font-semibold text-gray-700 mb-4">Nuevo Movimiento — {bodegaInfo.label}</h3>
           <form onSubmit={registrar} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -549,18 +578,23 @@ function Bodega({ showToast }) {
               </div>
             </div>
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">Materia Prima *</label>
-              <input value={form.materia_nombre} onChange={e=>setForm(f=>({...f,materia_nombre:e.target.value}))} placeholder="Ej: harina de trigo" required/>
+              <label className="text-xs text-gray-500 mb-1 block">Item *</label>
+              <input value={form.materia_nombre} onChange={e=>setForm(f=>({...f,materia_nombre:e.target.value}))}
+                placeholder={categoria === "EMPAQUE" ? "Ej: caja 20x20, bolsa kraft" :
+                             categoria === "CAFETERIA" ? "Ej: café tostado, leche entera" :
+                             categoria === "FRIOS" ? "Ej: queso campesino, crema de leche" :
+                             categoria === "PUNTO_VENTA" ? "Ej: pandeyuca 50g, bebida lata" :
+                             "Ej: harina de trigo"} required/>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Cantidad (g) *</label>
-                <input type="number" value={form.cantidad} onChange={e=>setForm(f=>({...f,cantidad:e.target.value}))} placeholder="20000" min="0" required/>
+                <input type="number" value={form.cantidad} onChange={e=>setForm(f=>({...f,cantidad:e.target.value}))} placeholder="1000" min="0" required/>
               </div>
               {form.tipo === "ENTRADA" && (
                 <div>
                   <label className="text-xs text-gray-500 mb-1 block">Valor Total ($)</label>
-                  <input type="number" value={form.valor_total} onChange={e=>setForm(f=>({...f,valor_total:e.target.value}))} placeholder="58000" min="0"/>
+                  <input type="number" value={form.valor_total} onChange={e=>setForm(f=>({...f,valor_total:e.target.value}))} placeholder="25000" min="0"/>
                 </div>
               )}
             </div>
@@ -592,7 +626,7 @@ function Bodega({ showToast }) {
               <tr>
                 <th className="text-left p-3">Fecha</th>
                 <th className="text-left p-3">Tipo</th>
-                <th className="text-left p-3">Materia Prima</th>
+                <th className="text-left p-3">Item</th>
                 <th className="text-right p-3">Cantidad</th>
                 <th className="text-right p-3">Valor</th>
                 <th className="text-left p-3">Responsable</th>
@@ -613,8 +647,182 @@ function Bodega({ showToast }) {
                   <td className="p-3 text-gray-500 text-xs">{m.sede || "—"}</td>
                 </tr>
               ))}
+              {movs.length === 0 && <tr><td colSpan={7} className="text-center text-gray-400 p-8">Sin movimientos en esta bodega</td></tr>}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Pareto 80/20 ──────────────────────────────────────────────────────────────
+function Pareto({ showToast }) {
+  const [tipo, setTipo]     = useState("consumo");
+  const [data, setData]     = useState(null);
+  const [loading, setLoad]  = useState(false);
+  const chartRef = useRef(null);
+  const chartInst = useRef(null);
+
+  const cargar = async () => {
+    setLoad(true);
+    try {
+      const r = await apiFetch(`/reportes/pareto?tipo=${tipo}`);
+      setData(r);
+    } catch(e) { showToast(e.message, "error"); }
+    setLoad(false);
+  };
+
+  useEffect(() => {
+    if (!data || !chartRef.current) return;
+    if (chartInst.current) chartInst.current.destroy();
+    const vitales = data.items.filter(i => i.es_vital);
+    const triviales = data.items.filter(i => !i.es_vital);
+    const labels = data.items.map(i => i.item);
+    const valores = data.items.map(i => i.valor);
+    const acumulados = data.items.map(i => i.porcentaje_acumulado);
+    chartInst.current = new Chart(chartRef.current, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          {
+            type: "bar",
+            label: tipo === "inventario" ? "Valor ($)" : "Cantidad (g)",
+            data: valores,
+            backgroundColor: data.items.map(i => i.es_vital ? "#f59e0bcc" : "#94a3b8cc"),
+            borderRadius: 4,
+            yAxisID: "y"
+          },
+          {
+            type: "line",
+            label: "% Acumulado",
+            data: acumulados,
+            borderColor: "#ef4444",
+            backgroundColor: "transparent",
+            borderWidth: 2,
+            pointRadius: 3,
+            tension: 0.3,
+            yAxisID: "y2"
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: "index" },
+        plugins: {
+          legend: { position: "top" },
+          annotation: {}
+        },
+        scales: {
+          y:  { beginAtZero: true, position: "left",  title: { display: true, text: tipo === "inventario" ? "Valor COP" : "Gramos" } },
+          y2: { beginAtZero: true, position: "right", max: 100, title: { display: true, text: "% Acumulado" }, grid: { drawOnChartArea: false } }
+        }
+      }
+    });
+  }, [data]);
+
+  const tipoLabels = { consumo: "Consumo de Materias Primas", inventario: "Valor en Inventario", merma: "Merma por Receta" };
+
+  return (
+    <div className="space-y-5">
+      <h2 className="text-xl font-bold text-gray-800">📊 Análisis Pareto 80/20</h2>
+
+      {/* Controles */}
+      <div className="card p-4 flex flex-wrap items-end gap-4">
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block font-medium">¿Qué analizar?</label>
+          <select value={tipo} onChange={e => setTipo(e.target.value)} className="w-56">
+            <option value="consumo">Consumo de Materias Primas</option>
+            <option value="inventario">Valor en Inventario</option>
+            <option value="merma">Merma por Receta</option>
+          </select>
+        </div>
+        <button onClick={cargar} disabled={loading} className="brand-btn px-6 py-2 rounded-lg text-sm font-semibold">
+          {loading ? "Calculando…" : "🔍 Generar Pareto"}
+        </button>
+      </div>
+
+      {data && (
+        <>
+          {/* Resumen */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="card p-4 text-center">
+              <div className="text-2xl font-bold text-yellow-600">{data.resumen.vitales_count}</div>
+              <div className="text-xs text-gray-500 mt-1">Items VITALES (80%)</div>
+            </div>
+            <div className="card p-4 text-center">
+              <div className="text-2xl font-bold text-gray-400">{data.resumen.triviales_count}</div>
+              <div className="text-xs text-gray-500 mt-1">Items triviales (20%)</div>
+            </div>
+            <div className="card p-4 text-center">
+              <div className="text-2xl font-bold text-blue-600">{data.resumen.vitales_pct_items}%</div>
+              <div className="text-xs text-gray-500 mt-1">de items generan el 80%</div>
+            </div>
+            <div className="card p-4 text-center">
+              <div className="text-lg font-bold text-gray-700">{data.unidad === "COP" ? fmtCop(data.total) : fmtPeso(data.total)}</div>
+              <div className="text-xs text-gray-500 mt-1">Total {tipoLabels[data.tipo]}</div>
+            </div>
+          </div>
+
+          {/* Gráfica */}
+          <div className="card p-4">
+            <h3 className="font-semibold text-gray-700 mb-3 text-sm">Diagrama Pareto — {tipoLabels[tipo]}</h3>
+            <canvas ref={chartRef} height="120"></canvas>
+          </div>
+
+          {/* Tabla */}
+          <div className="card overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left p-3 text-gray-600">#</th>
+                  <th className="text-left p-3 text-gray-600">Item</th>
+                  <th className="text-right p-3 text-gray-600">{data.unidad === "COP" ? "Valor ($)" : "Cantidad (g)"}</th>
+                  <th className="text-right p-3 text-gray-600">%</th>
+                  <th className="text-right p-3 text-gray-600">% Acum.</th>
+                  <th className="text-center p-3 text-gray-600">Clasificación</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((item, i) => (
+                  <tr key={i} className={`border-t border-gray-100 ${item.es_vital ? "bg-yellow-50" : ""}`}>
+                    <td className="p-3 text-gray-500 font-mono text-xs">{i+1}</td>
+                    <td className="p-3 capitalize font-medium text-gray-800">{item.item}</td>
+                    <td className="p-3 text-right font-mono">{data.unidad === "COP" ? fmtCop(item.valor) : fmt(item.valor)}</td>
+                    <td className="p-3 text-right font-mono text-gray-600">{item.porcentaje}%</td>
+                    <td className="p-3 text-right font-mono">
+                      <span className={item.porcentaje_acumulado <= 80 ? "text-yellow-600 font-semibold" : "text-gray-500"}>
+                        {item.porcentaje_acumulado}%
+                      </span>
+                    </td>
+                    <td className="p-3 text-center">
+                      {item.es_vital
+                        ? <span className="bg-yellow-100 text-yellow-800 text-xs font-semibold px-2 py-0.5 rounded-full">⭐ VITAL</span>
+                        : <span className="bg-gray-100 text-gray-500 text-xs px-2 py-0.5 rounded-full">trivial</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Items vitales destacados */}
+          <div className="card p-4 bg-amber-50 border border-amber-200">
+            <h3 className="font-semibold text-amber-800 mb-2 text-sm">⭐ Items VITALES — Controlar prioritariamente</h3>
+            <div className="flex flex-wrap gap-2">
+              {data.resumen.vitales.map(v => (
+                <span key={v} className="bg-amber-200 text-amber-900 text-xs font-semibold px-3 py-1 rounded-full capitalize">{v}</span>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {!data && !loading && (
+        <div className="text-center text-gray-400 py-16">
+          <div className="text-4xl mb-3">📊</div>
+          <p>Selecciona qué analizar y genera el Pareto.</p>
         </div>
       )}
     </div>
@@ -1508,190 +1716,4 @@ function Configuracion({ showToast, onConfigChange }) {
         <div>
           <label className="text-xs text-gray-500 mb-1 block">Nombre de la empresa</label>
           <div className="flex gap-2">
-            <input value={cfg.empresa_nombre||""} onChange={e=>setCfg(c=>({...c,empresa_nombre:e.target.value}))}
-              placeholder="Natas Panadería"/>
-            <button onClick={()=>guardar("empresa_nombre", cfg.empresa_nombre)}
-              className="brand-btn px-4 rounded-lg text-sm font-medium flex-shrink-0">Guardar</button>
-          </div>
-        </div>
-        <div>
-          <label className="text-xs text-gray-500 mb-1 block">URL del Logo (pega el link de tu imagen)</label>
-          <div className="flex gap-2">
-            <input value={cfg.empresa_logo||""} onChange={e=>setCfg(c=>({...c,empresa_logo:e.target.value}))}
-              placeholder="https://... o ruta del logo"/>
-            <button onClick={()=>guardar("empresa_logo", cfg.empresa_logo)}
-              className="brand-btn px-4 rounded-lg text-sm font-medium flex-shrink-0">Guardar</button>
-          </div>
-          {cfg.empresa_logo && <img src={cfg.empresa_logo} alt="Preview" className="h-16 mt-2 object-contain rounded-lg border" onError={e=>e.target.style.display="none"}/>}
-        </div>
-      </div>
-
-      <div className="card p-5 space-y-4">
-        <h3 className="font-semibold text-gray-700">🎨 Personalización Visual</h3>
-        <div>
-          <label className="text-xs text-gray-500 mb-2 block">Color principal de la marca</label>
-          <div className="flex items-center gap-3">
-            <input type="color" value={cfg.color_primario||"#f59e0b"}
-              onChange={e=>setCfg(c=>({...c,color_primario:e.target.value}))}
-              className="h-10 w-16 rounded cursor-pointer p-1"/>
-            <span className="text-sm text-gray-600">{cfg.color_primario||"#f59e0b"}</span>
-            <button onClick={()=>guardar("color_primario", cfg.color_primario)}
-              className="brand-btn px-4 py-2 rounded-lg text-sm font-medium">Aplicar Color</button>
-          </div>
-          <div className="flex gap-2 mt-3">
-            {["#f59e0b","#ef4444","#3b82f6","#22c55e","#8b5cf6","#1a1a2e","#ec4899"].map(c => (
-              <div key={c} className="w-8 h-8 rounded-full cursor-pointer border-2 border-white shadow"
-                style={{background:c}} onClick={()=>{ setCfg(f=>({...f,color_primario:c})); guardar("color_primario",c); }}/>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="card p-5 space-y-2">
-        <h3 className="font-semibold text-gray-700 mb-3">📱 Instalar en Móvil (PWA)</h3>
-        <p className="text-sm text-gray-600">Abre esta página en Chrome en tu celular y toca el botón <strong>"Agregar a pantalla de inicio"</strong>. La app funciona sin internet para consultas básicas.</p>
-        <div className="bg-amber-50 p-3 rounded-lg text-sm text-amber-800 mt-2">
-          ⭐ La app se instala como si fuera nativa — sin Play Store ni App Store.
-        </div>
-      </div>
-
-      <div className="card p-5 space-y-3">
-        <h3 className="font-semibold text-gray-700">🔗 Conexión al Backend</h3>
-        <p className="text-xs text-gray-500">URL actual: <code className="bg-gray-100 px-1 rounded text-xs">{getAPI()}</code></p>
-        <div>
-          <label className="text-xs text-gray-500 mb-1 block">Cambiar URL del Backend (Render.com)</label>
-          <div className="flex gap-2">
-            <input value={apiUrl} onChange={e => setApiUrl2(e.target.value)} placeholder="https://mi-api.onrender.com"/>
-            <button onClick={() => {
-              setApiUrl(apiUrl);
-              showToast("URL del backend actualizada ✅");
-              if (onConfigChange) onConfigChange();
-            }} className="brand-btn px-4 rounded-lg text-sm font-medium flex-shrink-0">Guardar</button>
-          </div>
-        </div>
-        <button onClick={() => { localStorage.removeItem("api_url"); showToast("URL eliminada — recarga la app para reconfigurar", "warn"); }}
-          className="text-xs text-red-500 underline">Restablecer configuración de backend</button>
-      </div>
-
-      <div className="card p-5">
-        <h3 className="font-semibold text-gray-700 mb-2">💡 Datos de acceso por defecto</h3>
-        <div className="bg-gray-50 rounded-lg p-3 text-sm font-mono space-y-1">
-          <div>Email: <span className="text-blue-600">admin@panaderia.com</span></div>
-          <div>Clave: <span className="text-blue-600">admin123</span></div>
-        </div>
-        <p className="text-xs text-gray-400 mt-2">Cambia estas credenciales antes de compartir el sistema.</p>
-      </div>
-    </div>
-  );
-}
-
-// ── App Principal ─────────────────────────────────────────────────────────────
-function App() {
-  const [usuario,  setUsuario]  = useState(() => {
-    try { return JSON.parse(localStorage.getItem("usuario")); } catch { return null; }
-  });
-  const [pagina,   setPagina]   = useState("dashboard");
-  const [toast,    setToast]    = useState(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [refresh,  setRefresh]  = useState(0);
-  const [setupDone, setSetupDone] = useState(hasApiUrl);
-
-  const color  = getColor();
-  const logo   = getLogo();
-  const nombre = getNombre();
-
-  document.documentElement.style.setProperty("--color-primary", color);
-  document.documentElement.style.setProperty("--color-dark", "#1a1a2e");
-
-  const showToast = (msg, tipo = "ok") => setToast({ msg, tipo });
-
-  const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("usuario");
-    setUsuario(null);
-  };
-
-  if (!setupDone) return <SetupBackend onDone={() => setSetupDone(true)}/>;
-  if (!usuario)   return <Login onLogin={u => { setUsuario(u); setPagina("dashboard"); }}/>;
-
-  const navItems = [
-    { key: "dashboard",  icon: "📊", label: "Dashboard" },
-    { key: "bodega",     icon: "📦", label: "Bodega" },
-    { key: "recetas",    icon: "🍞", label: "Recetas" },
-    { key: "produccion", icon: "🏭", label: "Producción" },
-    { key: "reportes",   icon: "📋", label: "Reportes" },
-    { key: "config",     icon: "⚙️", label: "Configuración" },
-  ];
-
-  const renderPage = () => {
-    switch(pagina) {
-      case "dashboard":  return <Dashboard key={refresh}/>;
-      case "bodega":     return <Bodega showToast={showToast}/>;
-      case "recetas":    return <Recetas showToast={showToast}/>;
-      case "produccion": return <Produccion showToast={showToast}/>;
-      case "reportes":   return <Reportes showToast={showToast}/>;
-      case "config":     return <Configuracion showToast={showToast} onConfigChange={() => setRefresh(r=>r+1)}/>;
-      default:           return null;
-    }
-  };
-
-  return (
-    <div className="flex h-screen overflow-hidden">
-
-      {menuOpen && <div className="fixed inset-0 bg-black/40 z-40 md:hidden" onClick={() => setMenuOpen(false)}/>}
-
-      <aside className={`sidebar brand-bg text-white w-56 flex-shrink-0 flex flex-col py-4 px-3 md:relative md:left-0 ${menuOpen ? "open" : ""}`}>
-        <div className="flex items-center gap-3 px-2 mb-6">
-          {logo
-            ? <img src={logo} alt="Logo" className="h-10 w-10 object-contain rounded-lg bg-white p-1"/>
-            : <div className="text-3xl">🍞</div>
-          }
-          <div>
-            <div className="font-bold text-sm leading-tight">{nombre}</div>
-            <div className="text-xs opacity-60">Producción</div>
-          </div>
-        </div>
-
-        <nav className="flex-1 space-y-1">
-          {navItems.map(item => (
-            <div key={item.key}
-              className={`nav-item text-sm ${pagina === item.key ? "active" : "text-gray-300"}`}
-              onClick={() => { setPagina(item.key); setMenuOpen(false); }}>
-              <span>{item.icon}</span>
-              <span>{item.label}</span>
-            </div>
-          ))}
-        </nav>
-
-        <div className="mt-4 px-2 border-t border-white/10 pt-4">
-          <div className="text-xs text-gray-400 mb-1">{usuario.nombre}</div>
-          <div className="text-xs text-gray-500 mb-3 capitalize">{usuario.rol}{usuario.sede_nombre ? ` · ${usuario.sede_nombre}` : ""}</div>
-          <button onClick={logout}
-            className="w-full text-left text-xs text-gray-400 hover:text-white py-1 flex items-center gap-2">
-            <span>↩</span> Cerrar sesión
-          </button>
-        </div>
-      </aside>
-
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between flex-shrink-0">
-          <button className="md:hidden text-gray-600 text-xl" onClick={() => setMenuOpen(m => !m)}>☰</button>
-          <h1 className="font-semibold text-gray-800 text-sm md:text-base capitalize">{navItems.find(n=>n.key===pagina)?.label || pagina}</h1>
-          <div className="text-xs text-gray-400 hidden md:block">{new Date().toLocaleDateString("es-CO", { weekday:"long", year:"numeric", month:"long", day:"numeric" })}</div>
-        </header>
-
-        <main className="flex-1 overflow-auto p-4 md:p-6">
-          {renderPage()}
-        </main>
-      </div>
-
-      {toast && <Toast msg={toast.msg} tipo={toast.tipo} onClose={() => setToast(null)}/>}
-    </div>
-  );
-}
-
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<App/>);
-</script>
-</body>
-</html>
+        
