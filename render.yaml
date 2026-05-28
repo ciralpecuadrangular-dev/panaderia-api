@@ -1,0 +1,16 @@
+# render.yaml — Configuracion de deploy para Render.com
+# Sube TODO el contenido de la carpeta PanaderiaApp/ a Render.com
+
+services:
+  - type: web
+    name: panaderia-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    disk:
+      name: panaderia-db
+      mountPath: /app/backend
+      sizeGB: 1
