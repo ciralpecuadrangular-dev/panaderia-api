@@ -212,7 +212,7 @@ def calcular_kardex(conn, categoria: str = None) -> dict:
             SELECT mp.nombre, bm.tipo, bm.cantidad, bm.valor_total
             FROM bodega_movimientos bm
             JOIN materias_primas mp ON mp.id = bm.materia_id
-            WHERE bm.bodega_categoria = ?
+            WHERE COALESCE(bm.bodega_categoria, 'MATERIAS_PRIMAS') = ?
             ORDER BY bm.id
         """, (categoria,)).fetchall()
     else:
@@ -335,7 +335,7 @@ def movimientos_bodega(
         query += " AND s.nombre = ?"
         params.append(sede)
     if categoria:
-        query += " AND bm.bodega_categoria = ?"
+        query += " AND COALESCE(bm.bodega_categoria, 'MATERIAS_PRIMAS') = ?"
         params.append(categoria)
     query += " ORDER BY bm.id DESC LIMIT 500"
     rows = db.execute(query, params).fetchall()
@@ -1070,7 +1070,7 @@ def reporte_pareto(
         """
         params = []
         if categoria:
-            q += " AND bm.bodega_categoria = ?"
+            q += " AND COALESCE(bm.bodega_categoria, 'MATERIAS_PRIMAS') = ?"
             params.append(categoria)
         q += " GROUP BY mp.nombre ORDER BY valor DESC"
         rows = db.execute(q, params).fetchall()
@@ -1109,6 +1109,4 @@ def reporte_pareto(
         pct_acum = round(acumulado / total * 100, 2)
         resultado.append({
             "item": i["item"],
-            "valor": round(i["valor"], 1),
-            "porcentaje": pct,
-            "porcentaje_acumulado": pct
+            "valor": round
