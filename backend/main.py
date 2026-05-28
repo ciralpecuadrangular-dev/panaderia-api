@@ -22,7 +22,7 @@ SECRET_KEY = "panaderia-app-secret-2026"
 ALGORITHM  = "HS256"
 DB_PATH    = os.path.join(os.path.dirname(__file__), "panaderia.db")
 
-app = FastAPI(title="PanaderIA App", version="1.0.0")
+app = FastAPI(title="PanaderIA App", version="1.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,7 +52,7 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS sedes (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL UNIQUE, activo INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password TEXT NOT NULL, rol TEXT NOT NULL DEFAULT 'sede', sede_id INTEGER, activo INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS materias_primas (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL UNIQUE, unidad TEXT DEFAULT 'g', activo INTEGER DEFAULT 1)",
-        "CREATE TABLE IF NOT EXISTS bodega_movimientos (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT NOT NULL, tipo TEXT NOT NULL, materia_id INTEGER NOT NULL, cantidad REAL NOT NULL, valor_total REAL DEFAULT 0, responsable TEXT, sede_id INTEGER, orden_id TEXT)",
+        "CREATE TABLE IF NOT EXISTS bodega_movimientos (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT NOT NULL, tipo TEXT NOT NULL, materia_id INTEGER NOT NULL, cantidad REAL NOT NULL, valor_total REAL DEFAULT 0, responsable TEXT, sede_id INTEGER, orden_id TEXT, bodega_categoria TEXT DEFAULT 'MATERIAS_PRIMAS')",
         "CREATE TABLE IF NOT EXISTS recetas (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL UNIQUE, activo INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS receta_ingredientes (id INTEGER PRIMARY KEY AUTOINCREMENT, receta_id INTEGER NOT NULL, materia_id INTEGER NOT NULL, gramos_base REAL NOT NULL)",
         "CREATE TABLE IF NOT EXISTS ordenes_produccion (id TEXT PRIMARY KEY, fecha TEXT NOT NULL, receta_id INTEGER NOT NULL, estado TEXT DEFAULT 'pendiente', responsable TEXT, masa_total REAL DEFAULT 0, unidades_prog INTEGER DEFAULT 0)",
@@ -105,6 +105,12 @@ def init_db():
     for k, v in config_default.items():
         c.execute("INSERT OR IGNORE INTO configuracion (clave, valor) VALUES (?, ?)", (k, v))
 
+    # Migración no-destructiva: agregar bodega_categoria si no existe
+    try:
+        c.execute("ALTER TABLE bodega_movimientos ADD COLUMN bodega_categoria TEXT DEFAULT 'MATERIAS_PRIMAS'")
+    except Exception:
+        pass  # columna ya existe
+
     conn.commit()
     conn.close()
 
@@ -145,6 +151,7 @@ class MovimientoRequest(BaseModel):
     valor_total: Optional[float] = 0
     responsable: Optional[str] = ""
     sede_nombre: Optional[str] = ""
+    bodega_categoria: Optional[str] = "MATERIAS_PRIMAS"  # MATERIAS_PRIMAS | EMPAQUE | CAFETERIA | FRIOS | PUNTO_VENTA
 
 class RecetaIngrediente(BaseModel):
     materia_nombre: str
@@ -198,14 +205,23 @@ def get_o_crear_materia(conn, nombre: str) -> int:
     conn.commit()
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-def calcular_kardex(conn) -> dict:
-    """Retorna saldos y costo promedio ponderado por materia prima."""
-    movs = conn.execute("""
-        SELECT mp.nombre, bm.tipo, bm.cantidad, bm.valor_total
-        FROM bodega_movimientos bm
-        JOIN materias_primas mp ON mp.id = bm.materia_id
-        ORDER BY bm.id
-    """).fetchall()
+def calcular_kardex(conn, categoria: str = None) -> dict:
+    """Retorna saldos y costo promedio ponderado por materia prima, opcionalmente filtrado por categoría."""
+    if categoria:
+        movs = conn.execute("""
+            SELECT mp.nombre, bm.tipo, bm.cantidad, bm.valor_total
+            FROM bodega_movimientos bm
+            JOIN materias_primas mp ON mp.id = bm.materia_id
+            WHERE bm.bodega_categoria = ?
+            ORDER BY bm.id
+        """, (categoria,)).fetchall()
+    else:
+        movs = conn.execute("""
+            SELECT mp.nombre, bm.tipo, bm.cantidad, bm.valor_total
+            FROM bodega_movimientos bm
+            JOIN materias_primas mp ON mp.id = bm.materia_id
+            ORDER BY bm.id
+        """).fetchall()
 
     kardex = {}
     for m in movs:
@@ -278,8 +294,12 @@ def crear_sede(body: dict, db: sqlite3.Connection = Depends(get_db), token=Depen
 
 # ── Bodega ─────────────────────────────────────────────────────────────────────
 @app.get("/api/bodega/saldos")
-def saldos_bodega(db: sqlite3.Connection = Depends(get_db), token=Depends(verificar_token)):
-    kardex = calcular_kardex(db)
+def saldos_bodega(
+    categoria: Optional[str] = None,
+    db: sqlite3.Connection = Depends(get_db),
+    token=Depends(verificar_token)
+):
+    kardex = calcular_kardex(db, categoria)
     resultado = []
     for nombre, k in kardex.items():
         resultado.append({
@@ -295,12 +315,13 @@ def saldos_bodega(db: sqlite3.Connection = Depends(get_db), token=Depends(verifi
 def movimientos_bodega(
     fecha: Optional[str] = None,
     sede: Optional[str] = None,
+    categoria: Optional[str] = None,
     db: sqlite3.Connection = Depends(get_db),
     token=Depends(verificar_token)
 ):
     query = """
         SELECT bm.id, bm.fecha, bm.tipo, mp.nombre as materia, bm.cantidad,
-               bm.valor_total, bm.responsable, s.nombre as sede
+               bm.valor_total, bm.responsable, s.nombre as sede, bm.bodega_categoria
         FROM bodega_movimientos bm
         JOIN materias_primas mp ON mp.id = bm.materia_id
         LEFT JOIN sedes s ON s.id = bm.sede_id
@@ -313,6 +334,9 @@ def movimientos_bodega(
     if sede:
         query += " AND s.nombre = ?"
         params.append(sede)
+    if categoria:
+        query += " AND bm.bodega_categoria = ?"
+        params.append(categoria)
     query += " ORDER BY bm.id DESC LIMIT 500"
     rows = db.execute(query, params).fetchall()
     return [dict(r) for r in rows]
@@ -325,10 +349,11 @@ def registrar_movimiento(req: MovimientoRequest, db: sqlite3.Connection = Depend
         s = db.execute("SELECT id FROM sedes WHERE nombre = ?", (req.sede_nombre.strip().upper(),)).fetchone()
         if s:
             sede_id = s["id"]
+    categoria = (req.bodega_categoria or "MATERIAS_PRIMAS").upper()
     db.execute("""
-        INSERT INTO bodega_movimientos (fecha, tipo, materia_id, cantidad, valor_total, responsable, sede_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (req.fecha, req.tipo.upper(), materia_id, req.cantidad, req.valor_total or 0, req.responsable, sede_id))
+        INSERT INTO bodega_movimientos (fecha, tipo, materia_id, cantidad, valor_total, responsable, sede_id, bodega_categoria)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (req.fecha, req.tipo.upper(), materia_id, req.cantidad, req.valor_total or 0, req.responsable, sede_id, categoria))
     db.commit()
     return {"ok": True}
 
@@ -1022,72 +1047,68 @@ def dashboard_kpis(db: sqlite3.Connection = Depends(get_db), token=Depends(verif
         "despachos_hoy": [dict(r) for r in despachos_hoy]
     }
 
-# ── Configuración ──────────────────────────────────────────────────────────────
-@app.get("/api/config")
-def get_config(db: sqlite3.Connection = Depends(get_db), token=Depends(verificar_token)):
-    rows = db.execute("SELECT clave, valor FROM configuracion").fetchall()
-    return {r["clave"]: r["valor"] for r in rows}
+# ── Pareto 80/20 ──────────────────────────────────────────────────────────────
+@app.get("/api/reportes/pareto")
+def reporte_pareto(
+    tipo: Optional[str] = "consumo",  # consumo | inventario | merma
+    categoria: Optional[str] = None,
+    db: sqlite3.Connection = Depends(get_db),
+    token=Depends(verificar_token)
+):
+    """
+    Análisis Pareto 80/20.
+    tipo=consumo    → materias más consumidas (SALIDA)
+    tipo=inventario → materias con mayor valor en bodega
+    tipo=merma      → recetas con mayor merma histórica
+    """
+    if tipo == "consumo":
+        q = """
+            SELECT mp.nombre as item, SUM(bm.cantidad) as valor
+            FROM bodega_movimientos bm
+            JOIN materias_primas mp ON mp.id = bm.materia_id
+            WHERE bm.tipo = 'SALIDA'
+        """
+        params = []
+        if categoria:
+            q += " AND bm.bodega_categoria = ?"
+            params.append(categoria)
+        q += " GROUP BY mp.nombre ORDER BY valor DESC"
+        rows = db.execute(q, params).fetchall()
+        unidad = "g"
 
-@app.put("/api/config")
-def update_config(req: ConfigRequest, db: sqlite3.Connection = Depends(get_db), token=Depends(solo_admin)):
-    db.execute("INSERT OR REPLACE INTO configuracion (clave, valor) VALUES (?, ?)", (req.clave, req.valor))
-    db.commit()
-    return {"ok": True}
+    elif tipo == "inventario":
+        kardex = calcular_kardex(db, categoria)
+        rows_data = [
+            {"item": k, "valor": round(v["cantidad"] * v["cpp"], 0)}
+            for k, v in kardex.items() if v["cantidad"] > 0
+        ]
+        rows_data.sort(key=lambda x: x["valor"], reverse=True)
+        rows = rows_data
+        unidad = "COP"
 
-# ── Materias Primas ────────────────────────────────────────────────────────────
-@app.get("/api/materias")
-def listar_materias(db: sqlite3.Connection = Depends(get_db), token=Depends(verificar_token)):
-    rows = db.execute("SELECT * FROM materias_primas WHERE activo = 1 ORDER BY nombre").fetchall()
-    return [dict(r) for r in rows]
+    elif tipo == "merma":
+        rows = db.execute("""
+            SELECT receta_nombre as item, SUM(merma_g) as valor
+            FROM produccion_terminada
+            WHERE merma_g > 0
+            GROUP BY receta_nombre
+            ORDER BY valor DESC
+        """).fetchall()
+        unidad = "g"
+    else:
+        raise HTTPException(400, "tipo debe ser: consumo, inventario o merma")
 
-# ── Usuarios ───────────────────────────────────────────────────────────────────
-@app.get("/api/usuarios")
-def listar_usuarios(db: sqlite3.Connection = Depends(get_db), token=Depends(solo_admin)):
-    rows = db.execute("""
-        SELECT u.id, u.nombre, u.email, u.rol, u.activo, s.nombre as sede_nombre
-        FROM usuarios u LEFT JOIN sedes s ON s.id = u.sede_id ORDER BY u.id
-    """).fetchall()
-    return [dict(r) for r in rows]
-
-@app.post("/api/usuarios")
-def crear_usuario(body: dict, db: sqlite3.Connection = Depends(get_db), token=Depends(solo_admin)):
-    nombre   = body.get("nombre", "").strip()
-    email    = body.get("email", "").strip()
-    password = body.get("password", "")
-    rol      = body.get("rol", "sede")
-    sede_nombre = body.get("sede_nombre", "")
-    if not all([nombre, email, password]):
-        raise HTTPException(400, "nombre, email y password son requeridos")
-    sede_id = None
-    if sede_nombre:
-        s = db.execute("SELECT id FROM sedes WHERE nombre = ?", (sede_nombre.strip().upper(),)).fetchone()
-        if s: sede_id = s["id"]
-    pwd_hash = hashlib.sha256(password.encode()).hexdigest()
-    try:
-        db.execute(
-            "INSERT INTO usuarios (nombre, email, password, rol, sede_id) VALUES (?,?,?,?,?)",
-            (nombre, email, pwd_hash, rol, sede_id)
-        )
-        db.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(400, f"El email '{email}' ya está registrado")
-    return {"ok": True}
-
-# ── Health & Startup ──────────────────────────────────────────────────────────
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "version": "1.1.0", "app": "PanaderIA App"}
-
-@app.on_event("startup")
-def startup():
-    init_db()
-    print("PanaderIA App v1.1 iniciada correctamente")
-
-# Servir frontend en producción (SIEMPRE al final para no interceptar /api/*)
-frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
-if os.path.exists(frontend_path):
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Calcular acumulado y % para la curva Pareto
+    items = [dict(r) for r in rows] if not isinstance(rows[0] if rows else {}, dict) else rows
+    total = sum(i["valor"] for i in items) if items else 1
+    acumulado = 0
+    resultado = []
+    for i in items:
+        acumulado += i["valor"]
+        pct = round(i["valor"] / total * 100, 2)
+        pct_acum = round(acumulado / total * 100, 2)
+        resultado.append({
+            "item": i["item"],
+            "valor": round(i["valor"], 1),
+            "porcentaje": pct,
+            "porcentaje_acumulado": pct
