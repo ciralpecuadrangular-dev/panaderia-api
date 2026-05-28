@@ -1,0 +1,1697 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="theme-color" content="#f59e0b"/>
+  <title>PanaderIA App</title>
+  <link rel="manifest" href="manifest.json"/>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- React + ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel standalone para JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    :root { --color-primary: #f59e0b; --color-dark: #1a1a2e; }
+    body { background: #f8fafc; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .brand-bg  { background-color: var(--color-dark); }
+    .brand-btn { background-color: var(--color-primary); color: #fff; }
+    .brand-btn:hover { opacity: 0.9; }
+    .brand-text { color: var(--color-primary); }
+    .card  { background: #fff; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .badge-pendiente { background: #fef3c7; color: #92400e; }
+    .badge-cerrada   { background: #d1fae5; color: #065f46; }
+    input, select, textarea {
+      border: 1px solid #e2e8f0; border-radius: 8px;
+      padding: 8px 12px; width: 100%; font-size: 14px;
+      outline: none; transition: border .2s;
+    }
+    input:focus, select:focus { border-color: var(--color-primary); }
+    .nav-item { cursor: pointer; padding: 10px 16px; border-radius: 8px; transition: background .15s; display: flex; align-items: center; gap: 10px; }
+    .nav-item:hover  { background: rgba(255,255,255,.1); }
+    .nav-item.active { background: var(--color-primary); }
+    .table-row:hover { background: #f8fafc; }
+    .spinner { border: 3px solid #f3f3f3; border-top: 3px solid var(--color-primary); border-radius: 50%; width: 24px; height: 24px; animation: spin .8s linear infinite; }
+    @keyframes spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }
+    .alerta-roja { background: #fee2e2; color: #991b1b; border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+    .alerta-verde { background: #d1fae5; color: #065f46; border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+    @media (max-width: 640px) {
+      .sidebar { position: fixed; left: -240px; top: 0; height: 100vh; z-index: 50; transition: left .3s; }
+      .sidebar.open { left: 0; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── Configuración API ─────────────────────────────────────────────────────────
+// API URL es configurable: se guarda en localStorage["api_url"]
+// Fallback local para desarrollo. En producción (Netlify) el usuario ingresa la URL de Render.com
+const getAPI = () => {
+  const saved = localStorage.getItem("api_url");
+  return saved && saved.trim() ? saved.trim() : "http://localhost:8000/api";
+};
+const setApiUrl = (url) => {
+  const clean = url.replace(/\/+$/, ""); // quitar trailing slash
+  localStorage.setItem("api_url", clean.endsWith("/api") ? clean : clean + "/api");
+};
+const hasApiUrl = () => !!localStorage.getItem("api_url");
+
+// Obtener color primario del localStorage (para personalización)
+const getColor = () => localStorage.getItem("color_primario") || "#f59e0b";
+const getLogo  = () => localStorage.getItem("empresa_logo")   || "";
+const getNombre= () => localStorage.getItem("empresa_nombre") || "PanaderIA App";
+
+function setColor(c) {
+  localStorage.setItem("color_primario", c);
+  document.documentElement.style.setProperty("--color-primary", c);
+  document.querySelector('meta[name="theme-color"]').setAttribute("content", c);
+}
+
+// ── Fetch helper ──────────────────────────────────────────────────────────────
+async function apiFetch(path, options = {}) {
+  const token = localStorage.getItem("token");
+  const res = await fetch(getAPI() + path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {})
+    }
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Error de red" }));
+    throw new Error(err.detail || "Error desconocido");
+  }
+  return res.json();
+}
+
+// ── Formato numérico ──────────────────────────────────────────────────────────
+const fmt    = (n) => Number(n || 0).toLocaleString("es-CO");
+const fmtPeso= (n) => `${fmt(n)} g`;
+const fmtCop = (n) => `$${Number(n || 0).toLocaleString("es-CO", {minimumFractionDigits:0})}`;
+
+// ── Alerta Toast ──────────────────────────────────────────────────────────────
+function Toast({ msg, tipo, onClose }) {
+  useEffect(() => { const t = setTimeout(onClose, 3500); return () => clearTimeout(t); }, []);
+  const bg = tipo === "error" ? "bg-red-500" : tipo === "warn" ? "bg-yellow-500" : "bg-green-500";
+  return (
+    <div className={`fixed top-4 right-4 z-50 ${bg} text-white px-5 py-3 rounded-xl shadow-lg text-sm max-w-xs`}>
+      {msg}
+    </div>
+  );
+}
+
+// ── Setup Backend (primera vez en producción) ─────────────────────────────────
+function SetupBackend({ onDone }) {
+  const [url, setUrl]       = useState("https://");
+  const [testing, setTest]  = useState(false);
+  const [error, setError]   = useState("");
+  const [ok, setOk]         = useState(false);
+
+  const test = async () => {
+    setTest(true); setError(""); setOk(false);
+    try {
+      const clean = url.replace(/\/+$/, "");
+      const base  = clean.endsWith("/api") ? clean : clean + "/api";
+      const res   = await fetch(base + "/health");
+      if (!res.ok) throw new Error("El servidor respondió con error " + res.status);
+      const data  = await res.json();
+      if (data.status === "ok") {
+        setOk(true);
+        localStorage.setItem("api_url", base);
+        setTimeout(onDone, 800);
+      } else {
+        throw new Error("Respuesta inesperada del servidor");
+      }
+    } catch(e) {
+      setError("No se pudo conectar: " + e.message + ". Verifica que el backend esté activo en Render.com.");
+    } finally { setTest(false); }
+  };
+
+  const useLocal = () => {
+    localStorage.setItem("api_url", "http://localhost:8000/api");
+    onDone();
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="card p-8 w-full max-w-md">
+        <div className="text-center mb-6">
+          <div className="text-5xl mb-3">🔗</div>
+          <h1 className="text-2xl font-bold text-gray-800">Configurar Backend</h1>
+          <p className="text-gray-500 text-sm mt-2">Primera vez en este dispositivo. Ingresa la URL de tu servidor Render.com.</p>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block font-medium">URL del Backend (Render.com)</label>
+            <input
+              type="url"
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              placeholder="https://panaderia-api.onrender.com"
+              className="w-full"
+            />
+            <p className="text-xs text-gray-400 mt-1">Ejemplo: https://panaderia-api.onrender.com</p>
+          </div>
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>
+          )}
+          {ok && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700 text-center font-semibold">✅ Conectado — redirigiendo...</div>
+          )}
+
+          <button
+            onClick={test}
+            disabled={testing || !url || url === "https://"}
+            className="brand-btn w-full py-3 rounded-lg font-semibold text-sm disabled:opacity-60">
+            {testing ? "Probando conexión..." : "Conectar y continuar"}
+          </button>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200"/></div>
+            <div className="relative text-center"><span className="bg-white px-3 text-xs text-gray-400">o</span></div>
+          </div>
+
+          <button onClick={useLocal} className="w-full py-2.5 rounded-lg border border-gray-300 text-sm text-gray-600 font-medium hover:bg-gray-50">
+            Usar servidor local (localhost:8000)
+          </button>
+        </div>
+
+        <div className="mt-6 bg-amber-50 rounded-lg p-4 text-xs text-amber-800 space-y-1">
+          <p className="font-semibold">¿Todavía no tienes el backend en línea?</p>
+          <p>1. Ve a <strong>render.com</strong> → New Web Service</p>
+          <p>2. Sube la carpeta <strong>PanaderiaApp/</strong></p>
+          <p>3. Start command: <code className="bg-amber-100 px-1 rounded">uvicorn backend.main:app --host 0.0.0.0 --port $PORT</code></p>
+          <p>4. Copia la URL que te da Render y pégala aquí.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+function Login({ onLogin }) {
+  const [email, setEmail]   = useState("admin@panaderia.com");
+  const [pass,  setPass]    = useState("admin123");
+  const [error, setError]   = useState("");
+  const [loading,setLoading]= useState(false);
+  const nombre = getNombre();
+  const logo   = getLogo();
+  const color  = getColor();
+
+  const login = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError("");
+    try {
+      const data = await apiFetch("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password: pass })
+      });
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("usuario", JSON.stringify(data.usuario));
+      onLogin(data.usuario);
+    } catch(err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="card p-8 w-full max-w-sm">
+        <div className="text-center mb-6">
+          {logo
+            ? <img src={logo} alt="Logo" className="h-16 mx-auto mb-3 object-contain"/>
+            : <div className="text-5xl mb-2">🍞</div>
+          }
+          <h1 className="text-2xl font-bold" style={{color: color}}>{nombre}</h1>
+          <p className="text-gray-500 text-sm mt-1">Sistema Integral de Producción</p>
+        </div>
+        <form onSubmit={login} className="space-y-4">
+          <div>
+            <label className="text-sm font-medium text-gray-600 mb-1 block">Correo</label>
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="usuario@empresa.com"/>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-600 mb-1 block">Contraseña</label>
+            <input type="password" value={pass} onChange={e=>setPass(e.target.value)} required/>
+          </div>
+          {error && <div className="text-red-500 text-sm bg-red-50 p-2 rounded-lg">{error}</div>}
+          <button type="submit" disabled={loading}
+            className="brand-btn w-full py-2.5 rounded-lg font-semibold text-sm disabled:opacity-60">
+            {loading ? "Iniciando..." : "Entrar al Sistema"}
+          </button>
+        </form>
+        <p className="text-center text-xs text-gray-400 mt-4">v1.0 · PanaderIA App</p>
+      </div>
+    </div>
+  );
+}
+
+// ── KPI Card ──────────────────────────────────────────────────────────────────
+function KpiCard({ icon, label, value, sub, color = "#f59e0b" }) {
+  return (
+    <div className="card p-4 flex items-center gap-4">
+      <div className="text-3xl w-12 h-12 rounded-xl flex items-center justify-center" style={{background: color+"22"}}>
+        {icon}
+      </div>
+      <div>
+        <div className="text-xs text-gray-500 font-medium">{label}</div>
+        <div className="text-xl font-bold text-gray-800">{value}</div>
+        {sub && <div className="text-xs text-gray-400">{sub}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function Dashboard() {
+  const [kpis, setKpis]   = useState(null);
+  const [loading, setLoad]= useState(true);
+  const chartProd  = useRef(null);
+  const chartConsumo = useRef(null);
+  const chartDespachos = useRef(null);
+  const instProd   = useRef(null);
+  const instConsumo= useRef(null);
+  const instDesp   = useRef(null);
+  const color = getColor();
+
+  useEffect(() => {
+    apiFetch("/reportes/dashboard-kpis").then(d => {
+      setKpis(d);
+      setLoad(false);
+    }).catch(() => setLoad(false));
+  }, []);
+
+  useEffect(() => {
+    if (!kpis) return;
+
+    // Gráfica producción semana
+    if (chartProd.current) {
+      if (instProd.current) instProd.current.destroy();
+      instProd.current = new Chart(chartProd.current, {
+        type: "bar",
+        data: {
+          labels: kpis.produccion_semana.map(p => p.dia?.slice(5) || ""),
+          datasets: [{
+            label: "Unidades producidas",
+            data: kpis.produccion_semana.map(p => p.total),
+            backgroundColor: color + "bb",
+            borderRadius: 6,
+            maxBarThickness: 60
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, ticks: { precision: 0 } },
+            x: { grid: { display: false } }
+          }
+        }
+      });
+    }
+
+    // Gráfica consumo de materias primas
+    if (chartConsumo.current && kpis.top_consumo?.length) {
+      if (instConsumo.current) instConsumo.current.destroy();
+      const colors = ["#f59e0b","#3b82f6","#22c55e","#ef4444","#8b5cf6","#ec4899"];
+      instConsumo.current = new Chart(chartConsumo.current, {
+        type: "doughnut",
+        data: {
+          labels: kpis.top_consumo.map(c => c.nombre),
+          datasets: [{
+            data: kpis.top_consumo.map(c => Math.round(c.total_g)),
+            backgroundColor: colors,
+            borderWidth: 2, borderColor: "#fff"
+          }]
+        },
+        options: { responsive: true, cutout: "65%", plugins: { legend: { position: "bottom", labels: { font: { size: 11 } } } } }
+      });
+    }
+
+    // Gráfica despachos por sede
+    if (chartDespachos.current && kpis.despachos_hoy?.length) {
+      if (instDesp.current) instDesp.current.destroy();
+      instDesp.current = new Chart(chartDespachos.current, {
+        type: "bar",
+        data: {
+          labels: kpis.despachos_hoy.map(d => d.sede_nombre),
+          datasets: [{
+            label: "Unidades",
+            data: kpis.despachos_hoy.map(d => d.unidades),
+            backgroundColor: "#3b82f6bb",
+            borderRadius: 6
+          }]
+        },
+        options: { indexAxis: "y", responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } }
+      });
+    }
+  }, [kpis]);
+
+  if (loading) return <div className="flex justify-center items-center h-64"><div className="spinner"></div></div>;
+  if (!kpis)   return <div className="text-center text-gray-400 py-12">⚠️ No se pudo conectar con el servidor.<br/><span className="text-sm">Verifica que el backend esté corriendo en localhost:8000</span></div>;
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-xl font-bold text-gray-800">📊 Dashboard Principal</h2>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        <KpiCard icon="🏭" label="Órdenes Pendientes"   value={kpis.ordenes_pendientes} color="#ef4444"/>
+        <KpiCard icon="🍞" label="Producción Hoy"       value={fmt(kpis.produccion_hoy) + " un"} color={color}/>
+        <KpiCard icon="📦" label="Entradas Hoy"         value={fmtPeso(kpis.entradas_hoy_g)} color="#22c55e"/>
+        <KpiCard icon="💰" label="Valor Inventario"     value={fmtCop(kpis.valor_inventario)} color="#3b82f6"/>
+        <KpiCard icon="🧂" label="Materias con Stock"   value={kpis.materias_activas} color="#8b5cf6"/>
+      </div>
+
+      {/* Gráficas */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="card p-4 lg:col-span-2">
+          <h3 className="font-semibold text-gray-700 mb-3 text-sm">📈 Producción — Últimos 7 días</h3>
+          {kpis.produccion_semana?.length
+            ? <canvas ref={chartProd} height="140"></canvas>
+            : <div className="text-center text-gray-400 py-8 text-sm">Sin registros esta semana</div>
+          }
+        </div>
+        <div className="card p-4">
+          <h3 className="font-semibold text-gray-700 mb-3 text-sm">🧂 Top Consumo (30 días)</h3>
+          {kpis.top_consumo?.length
+            ? <canvas ref={chartConsumo} height="180"></canvas>
+            : <div className="text-center text-gray-400 py-8 text-sm">Sin movimientos registrados</div>
+          }
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Despachos hoy */}
+        <div className="card p-4">
+          <h3 className="font-semibold text-gray-700 mb-3 text-sm">🚚 Despachos por Sede — Hoy</h3>
+          {kpis.despachos_hoy?.length
+            ? <canvas ref={chartDespachos} height="130"></canvas>
+            : <div className="text-center text-gray-400 py-6 text-sm">Sin despachos hoy</div>
+          }
+        </div>
+
+        {/* Saldos rápidos */}
+        <div className="card p-4">
+          <h3 className="font-semibold text-gray-700 mb-3 text-sm">📦 Saldos Bodega (Top 8)</h3>
+          <div className="space-y-2">
+            {kpis.saldos_bodega?.map(s => (
+              <div key={s.materia} className="flex justify-between items-center text-sm">
+                <span className="capitalize text-gray-700">{s.materia}</span>
+                <span className={`font-mono font-semibold ${s.saldo_g < 1000 ? "text-red-500" : "text-gray-800"}`}>
+                  {fmtPeso(s.saldo_g)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Bodega ────────────────────────────────────────────────────────────────────
+function Bodega({ showToast }) {
+  const [saldos, setSaldos]     = useState([]);
+  const [movs,   setMovs]       = useState([]);
+  const [tab,    setTab]        = useState("saldos");
+  const [loading, setLoading]   = useState(false);
+  const [form,   setForm]       = useState({
+    fecha: new Date().toLocaleDateString("es-CO").split("/").reverse().join("/").replace(/\//g,"/"),
+    tipo: "ENTRADA", materia_nombre: "", cantidad: "", valor_total: "", responsable: "", sede_nombre: ""
+  });
+  const [sedes, setSedes] = useState([]);
+
+  const hoy = new Date();
+  const fechaHoy = `${String(hoy.getDate()).padStart(2,"0")}/${String(hoy.getMonth()+1).padStart(2,"0")}/${hoy.getFullYear()}`;
+
+  useEffect(() => {
+    cargarSaldos();
+    cargarMovs();
+    apiFetch("/sedes").then(setSedes).catch(() => {});
+  }, []);
+
+  const cargarSaldos = () => {
+    setLoading(true);
+    apiFetch("/bodega/saldos").then(d => { setSaldos(d); setLoading(false); }).catch(() => setLoading(false));
+  };
+
+  const cargarMovs = () => {
+    apiFetch("/bodega/movimientos").then(setMovs).catch(() => {});
+  };
+
+  const registrar = async (e) => {
+    e.preventDefault();
+    if (!form.materia_nombre || !form.cantidad) { showToast("Completa todos los campos", "warn"); return; }
+    try {
+      await apiFetch("/bodega/movimiento", {
+        method: "POST",
+        body: JSON.stringify({
+          ...form,
+          fecha: form.fecha || fechaHoy,
+          cantidad: parseFloat(form.cantidad),
+          valor_total: form.tipo === "ENTRADA" ? parseFloat(form.valor_total || 0) : 0
+        })
+      });
+      showToast("Movimiento registrado ✅");
+      setForm(f => ({ ...f, materia_nombre: "", cantidad: "", valor_total: "", responsable: "" }));
+      cargarSaldos(); cargarMovs();
+    } catch(err) { showToast(err.message, "error"); }
+  };
+
+  return (
+    <div className="space-y-5">
+      <h2 className="text-xl font-bold text-gray-800">📦 Bodega e Inventario</h2>
+
+      {/* Tabs */}
+      <div className="flex gap-2 border-b border-gray-200">
+        {[["saldos","Saldos Kardex"],["movimiento","Registrar Movimiento"],["historial","Historial"]].map(([k,v]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`pb-2 px-3 text-sm font-medium border-b-2 transition-colors ${tab===k ? "border-yellow-500 text-yellow-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}>{v}</button>
+        ))}
+      </div>
+
+      {/* Saldos Kardex */}
+      {tab === "saldos" && (
+        <div className="card overflow-hidden">
+          {loading ? <div className="flex justify-center p-8"><div className="spinner"></div></div> : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-gray-600">
+                <tr>
+                  <th className="text-left p-3 font-semibold">Materia Prima</th>
+                  <th className="text-right p-3 font-semibold">Saldo (g)</th>
+                  <th className="text-right p-3 font-semibold">Saldo (kg)</th>
+                  <th className="text-right p-3 font-semibold">Costo / g</th>
+                  <th className="text-right p-3 font-semibold">Valor Inventario</th>
+                  <th className="text-center p-3 font-semibold">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {saldos.map(s => (
+                  <tr key={s.materia} className="table-row border-t border-gray-100">
+                    <td className="p-3 capitalize font-medium text-gray-800">{s.materia}</td>
+                    <td className="p-3 text-right font-mono text-gray-700">{fmt(s.saldo_g)}</td>
+                    <td className="p-3 text-right font-mono text-gray-500">{(s.saldo_g/1000).toFixed(2)}</td>
+                    <td className="p-3 text-right font-mono text-gray-600">{fmtCop(s.costo_promedio)}</td>
+                    <td className="p-3 text-right font-mono font-semibold text-gray-800">{fmtCop(s.valor_inventario)}</td>
+                    <td className="p-3 text-center">
+                      <span className={s.saldo_g < 500 ? "alerta-roja" : "alerta-verde"}>
+                        {s.saldo_g < 500 ? "⚠️ Bajo" : "✅ Ok"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {saldos.length === 0 && <tr><td colSpan={6} className="text-center text-gray-400 p-8">Sin registros en bodega</td></tr>}
+              </tbody>
+              <tfoot className="bg-gray-50">
+                <tr>
+                  <td colSpan={4} className="p-3 text-right font-semibold text-gray-600">Total Inventario:</td>
+                  <td className="p-3 text-right font-bold text-green-700">{fmtCop(saldos.reduce((s,r)=>s+r.valor_inventario,0))}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* Registrar Movimiento */}
+      {tab === "movimiento" && (
+        <div className="card p-6 max-w-lg">
+          <h3 className="font-semibold text-gray-700 mb-4">Nuevo Movimiento de Bodega</h3>
+          <form onSubmit={registrar} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Fecha</label>
+                <input type="text" value={form.fecha} onChange={e=>setForm(f=>({...f,fecha:e.target.value}))} placeholder={fechaHoy}/>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Tipo</label>
+                <select value={form.tipo} onChange={e=>setForm(f=>({...f,tipo:e.target.value}))}>
+                  <option value="ENTRADA">ENTRADA</option>
+                  <option value="SALIDA">SALIDA</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Materia Prima *</label>
+              <input value={form.materia_nombre} onChange={e=>setForm(f=>({...f,materia_nombre:e.target.value}))} placeholder="Ej: harina de trigo" required/>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Cantidad (g) *</label>
+                <input type="number" value={form.cantidad} onChange={e=>setForm(f=>({...f,cantidad:e.target.value}))} placeholder="20000" min="0" required/>
+              </div>
+              {form.tipo === "ENTRADA" && (
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">Valor Total ($)</label>
+                  <input type="number" value={form.valor_total} onChange={e=>setForm(f=>({...f,valor_total:e.target.value}))} placeholder="58000" min="0"/>
+                </div>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Responsable</label>
+                <input value={form.responsable} onChange={e=>setForm(f=>({...f,responsable:e.target.value}))} placeholder="Nombre"/>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Sede (opcional)</label>
+                <select value={form.sede_nombre} onChange={e=>setForm(f=>({...f,sede_nombre:e.target.value}))}>
+                  <option value="">Sede Principal</option>
+                  {sedes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}
+                </select>
+              </div>
+            </div>
+            <button type="submit" className="brand-btn px-6 py-2.5 rounded-lg font-semibold text-sm w-full">
+              Registrar Movimiento
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Historial */}
+      {tab === "historial" && (
+        <div className="card overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-gray-600">
+              <tr>
+                <th className="text-left p-3">Fecha</th>
+                <th className="text-left p-3">Tipo</th>
+                <th className="text-left p-3">Materia Prima</th>
+                <th className="text-right p-3">Cantidad</th>
+                <th className="text-right p-3">Valor</th>
+                <th className="text-left p-3">Responsable</th>
+                <th className="text-left p-3">Sede</th>
+              </tr>
+            </thead>
+            <tbody>
+              {movs.slice(0,100).map(m => (
+                <tr key={m.id} className="table-row border-t border-gray-100">
+                  <td className="p-3 text-gray-600">{m.fecha}</td>
+                  <td className="p-3">
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${m.tipo==="ENTRADA"?"bg-green-100 text-green-700":"bg-red-100 text-red-700"}`}>{m.tipo}</span>
+                  </td>
+                  <td className="p-3 capitalize text-gray-800">{m.materia}</td>
+                  <td className="p-3 text-right font-mono">{fmt(m.cantidad)} g</td>
+                  <td className="p-3 text-right font-mono text-gray-600">{m.valor_total>0 ? fmtCop(m.valor_total) : "—"}</td>
+                  <td className="p-3 text-gray-600">{m.responsable}</td>
+                  <td className="p-3 text-gray-500 text-xs">{m.sede || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Recetas ───────────────────────────────────────────────────────────────────
+function TablaProductos({ showToast }) {
+  const [peso, setPeso] = useState(200);
+  const [data, setData] = useState([]);
+  const [cargando, setCargando] = useState(false);
+
+  const cargar = async () => {
+    setCargando(true);
+    try {
+      const r = await apiFetch(`/reportes/productos-terminados?peso_g=${peso}`);
+      setData(r);
+    } catch(e) { showToast(e.message, "error"); }
+    setCargando(false);
+  };
+
+  const fmtCop = v => v ? `$ ${Number(v).toLocaleString("es-CO")}` : "$ 0";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-end gap-3">
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">Peso comercial de presentación (g/unidad)</label>
+          <input type="number" value={peso} onChange={e=>setPeso(e.target.value)} min="1" className="w-36"/>
+        </div>
+        <button onClick={cargar} disabled={cargando} className="brand-btn px-5 py-2 rounded-lg text-sm font-semibold">
+          {cargando ? "Calculando…" : "🧾 Generar Tabla"}
+        </button>
+      </div>
+
+      {data.length > 0 && (
+        <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-amber-500 text-white">
+                <th className="text-left p-3 font-semibold">Receta</th>
+                <th className="text-right p-3 font-semibold">Masa</th>
+                <th className="text-right p-3 font-semibold">$ Masa</th>
+                <th className="text-left p-3 font-semibold border-l border-amber-400">Relleno</th>
+                <th className="text-right p-3 font-semibold">g/und</th>
+                <th className="text-right p-3 font-semibold">$ Relleno</th>
+                <th className="text-left p-3 font-semibold border-l border-amber-400">Decoración</th>
+                <th className="text-right p-3 font-semibold">g/und</th>
+                <th className="text-right p-3 font-semibold">$ Deco</th>
+                <th className="text-right p-3 font-semibold border-l border-amber-400 bg-amber-600">TOTAL/und</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((row, ri) => {
+                const maxFilas = Math.max(1, row.rellenos.length, row.decoraciones.length);
+                return Array.from({length: maxFilas}).map((_, fi) => {
+                  const rel = row.rellenos[fi];
+                  const dec = row.decoraciones[fi];
+                  return (
+                    <tr key={`${ri}-${fi}`} className={fi===0 ? (ri%2===0?"bg-white":"bg-gray-50") : (ri%2===0?"bg-white/60":"bg-gray-50/60")}>
+                      {fi===0 ? (
+                        <>
+                          <td className="p-2 font-semibold text-gray-800 align-top" rowSpan={maxFilas}>{row.receta}</td>
+                          <td className="p-2 text-right font-mono align-top text-gray-600" rowSpan={maxFilas}>{row.peso_masa_g} g</td>
+                          <td className="p-2 text-right font-mono align-top text-gray-700" rowSpan={maxFilas}>{fmtCop(row.costo_masa)}</td>
+                        </>
+                      ) : null}
+                      <td className="p-2 capitalize border-l border-gray-100 text-gray-700">{rel ? rel.ingrediente : (fi===0 && row.rellenos.length===0 ? <span className="text-gray-300 italic">Sin relleno</span> : "")}</td>
+                      <td className="p-2 text-right font-mono text-gray-600">{rel ? `${rel.gramos} g` : ""}</td>
+                      <td className="p-2 text-right font-mono text-gray-700">{rel ? fmtCop(rel.costo) : ""}</td>
+                      <td className="p-2 capitalize border-l border-gray-100 text-gray-700">{dec ? dec.ingrediente : (fi===0 && row.decoraciones.length===0 ? <span className="text-gray-300 italic">Sin decoración</span> : "")}</td>
+                      <td className="p-2 text-right font-mono text-gray-600">{dec ? `${dec.gramos} g` : ""}</td>
+                      <td className="p-2 text-right font-mono text-gray-700">{dec ? fmtCop(dec.costo) : ""}</td>
+                      {fi===0 ? (
+                        <td className="p-2 text-right font-bold text-amber-700 border-l border-gray-200 bg-amber-50" rowSpan={maxFilas}>{fmtCop(row.costo_total_unidad)}</td>
+                      ) : null}
+                    </tr>
+                  );
+                });
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {data.length === 0 && !cargando && (
+        <div className="text-center text-gray-400 py-16">
+          <div className="text-4xl mb-3">🧾</div>
+          <p>Selecciona el peso de presentación y genera la tabla.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GestionExtras({ recetas, showToast }) {
+  const [selNombre, setSelNombre] = useState("");
+  const [rellenos, setRellenos]   = useState([]);
+  const [decos, setDecos]         = useState([]);
+  const [newRel, setNewRel]       = useState({ materia_nombre: "", gramos_por_unidad: "" });
+  const [newDec, setNewDec]       = useState({ materia_nombre: "", gramos_por_unidad: "" });
+
+  const cargarExtras = async (nombre) => {
+    if (!nombre) return;
+    const [r, d] = await Promise.all([
+      apiFetch(`/recetas/${encodeURIComponent(nombre)}/rellenos`),
+      apiFetch(`/recetas/${encodeURIComponent(nombre)}/decoraciones`)
+    ]);
+    setRellenos(r);
+    setDecos(d);
+  };
+
+  const cambiarReceta = (nombre) => { setSelNombre(nombre); cargarExtras(nombre); };
+
+  const agregarRelleno = async () => {
+    if (!selNombre || !newRel.materia_nombre || !newRel.gramos_por_unidad) { showToast("Completa el ingrediente y los gramos", "warn"); return; }
+    try {
+      await apiFetch(`/recetas/${encodeURIComponent(selNombre)}/rellenos`, {
+        method: "POST",
+        body: JSON.stringify({ items: [{ materia_nombre: newRel.materia_nombre, gramos_por_unidad: parseFloat(newRel.gramos_por_unidad) }] })
+      });
+      showToast("Relleno guardado ✅");
+      setNewRel({ materia_nombre: "", gramos_por_unidad: "" });
+      cargarExtras(selNombre);
+    } catch(e) { showToast(e.message, "error"); }
+  };
+
+  const eliminarRelleno = async (id) => {
+    try {
+      await apiFetch(`/recetas/${encodeURIComponent(selNombre)}/rellenos/${id}`, { method: "DELETE" });
+      showToast("Eliminado"); cargarExtras(selNombre);
+    } catch(e) { showToast(e.message, "error"); }
+  };
+
+  const agregarDeco = async () => {
+    if (!selNombre || !newDec.materia_nombre || !newDec.gramos_por_unidad) { showToast("Completa el ingrediente y los gramos", "warn"); return; }
+    try {
+      await apiFetch(`/recetas/${encodeURIComponent(selNombre)}/decoraciones`, {
+        method: "POST",
+        body: JSON.stringify({ items: [{ materia_nombre: newDec.materia_nombre, gramos_por_unidad: parseFloat(newDec.gramos_por_unidad) }] })
+      });
+      showToast("Decoración guardada ✅");
+      setNewDec({ materia_nombre: "", gramos_por_unidad: "" });
+      cargarExtras(selNombre);
+    } catch(e) { showToast(e.message, "error"); }
+  };
+
+  const eliminarDeco = async (id) => {
+    try {
+      await apiFetch(`/recetas/${encodeURIComponent(selNombre)}/decoraciones/${id}`, { method: "DELETE" });
+      showToast("Eliminado"); cargarExtras(selNombre);
+    } catch(e) { showToast(e.message, "error"); }
+  };
+
+  return (
+    <div className="space-y-5 max-w-2xl">
+      <div>
+        <label className="text-xs text-gray-500 mb-1 block">Selecciona la receta</label>
+        <select value={selNombre} onChange={e => cambiarReceta(e.target.value)} className="w-full max-w-xs">
+          <option value="">— Elige una receta —</option>
+          {recetas.map(r => <option key={r.id} value={r.nombre}>{r.nombre}</option>)}
+        </select>
+      </div>
+
+      {selNombre && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {/* RELLENO */}
+          <div className="card p-4">
+            <h4 className="font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              🥐 Relleno
+              <span className="text-xs font-normal text-gray-400">(gramos por unidad terminada)</span>
+            </h4>
+            <div className="space-y-2 mb-4 min-h-[60px]">
+              {rellenos.length === 0 && <p className="text-xs text-gray-400 italic">Sin relleno registrado</p>}
+              {rellenos.map(r => (
+                <div key={r.id} className="flex items-center justify-between bg-orange-50 rounded-lg px-3 py-2">
+                  <span className="text-sm capitalize text-gray-700">{r.materia}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-mono font-semibold text-orange-700">{r.gramos_por_unidad} g</span>
+                    <button onClick={() => eliminarRelleno(r.id)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input value={newRel.materia_nombre} onChange={e=>setNewRel(r=>({...r,materia_nombre:e.target.value}))}
+                placeholder="Ingrediente" className="flex-1 text-sm"/>
+              <input type="number" value={newRel.gramos_por_unidad} onChange={e=>setNewRel(r=>({...r,gramos_por_unidad:e.target.value}))}
+                placeholder="g/und" className="w-20 text-sm" min="0.1" step="0.1"/>
+            </div>
+            <button onClick={agregarRelleno} className="brand-btn w-full mt-2 py-2 rounded-lg text-sm font-semibold">
+              + Agregar relleno
+            </button>
+          </div>
+
+          {/* DECORACIÓN */}
+          <div className="card p-4">
+            <h4 className="font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              🎂 Decoración
+              <span className="text-xs font-normal text-gray-400">(gramos por unidad terminada)</span>
+            </h4>
+            <div className="space-y-2 mb-4 min-h-[60px]">
+              {decos.length === 0 && <p className="text-xs text-gray-400 italic">Sin decoración registrada</p>}
+              {decos.map(d => (
+                <div key={d.id} className="flex items-center justify-between bg-pink-50 rounded-lg px-3 py-2">
+                  <span className="text-sm capitalize text-gray-700">{d.materia}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-mono font-semibold text-pink-700">{d.gramos_por_unidad} g</span>
+                    <button onClick={() => eliminarDeco(d.id)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input value={newDec.materia_nombre} onChange={e=>setNewDec(r=>({...r,materia_nombre:e.target.value}))}
+                placeholder="Ingrediente" className="flex-1 text-sm"/>
+              <input type="number" value={newDec.gramos_por_unidad} onChange={e=>setNewDec(r=>({...r,gramos_por_unidad:e.target.value}))}
+                placeholder="g/und" className="w-20 text-sm" min="0.1" step="0.1"/>
+            </div>
+            <button onClick={agregarDeco} className="brand-btn w-full mt-2 py-2 rounded-lg text-sm font-semibold">
+              + Agregar decoración
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Recetas({ showToast }) {
+  const [recetas, setRecetas]     = useState([]);
+  const [selReceta, setSelReceta] = useState(null);
+  const [simResult, setSimResult] = useState(null);
+  const [simCargando, setSimCargando] = useState(false);
+  const [tab, setTab]             = useState("lista");
+  const [simForm, setSimForm]     = useState({ peso_g: 200, cantidad: 10 });
+  const [usarRelPred, setUsarRelPred] = useState(true);
+  const [usarDecPred, setUsarDecPred] = useState(true);
+  const [relExtra, setRelExtra]   = useState([{ materia_nombre: "", gramos_por_unidad: "" }]);
+  const [decExtra, setDecExtra]   = useState([{ materia_nombre: "", gramos_por_unidad: "" }]);
+  const [descontar, setDescontar] = useState(false);
+  const [responsable, setResponsable] = useState("");
+  const [newReceta, setNewReceta] = useState({ nombre: "", ingredientes: [{ materia_nombre: "", gramos_base: "" }] });
+
+  const cargarRecetas = () => apiFetch("/recetas").then(setRecetas).catch(() => {});
+
+  useEffect(() => { cargarRecetas(); }, []);
+
+  const simularCompleto = async () => {
+    if (!selReceta) { showToast("Selecciona una receta", "warn"); return; }
+    setSimCargando(true);
+    setSimResult(null);
+    const relFiltrados = usarRelPred ? [] : relExtra.filter(r => r.materia_nombre && r.gramos_por_unidad).map(r => ({ ...r, gramos_por_unidad: parseFloat(r.gramos_por_unidad) }));
+    const decFiltradas = usarDecPred ? [] : decExtra.filter(d => d.materia_nombre && d.gramos_por_unidad).map(d => ({ ...d, gramos_por_unidad: parseFloat(d.gramos_por_unidad) }));
+    try {
+      const r = await apiFetch(`/recetas/${encodeURIComponent(selReceta.nombre)}/simular-completo`, {
+        method: "POST",
+        body: JSON.stringify({
+          peso_g: parseFloat(simForm.peso_g),
+          cantidad: parseInt(simForm.cantidad),
+          rellenos: relFiltrados,
+          decoraciones: decFiltradas,
+          descontar_inventario: descontar,
+          responsable: responsable || "simulador"
+        })
+      });
+      setSimResult(r);
+      if (descontar) showToast("✅ Inventario descontado (relleno + decoración)");
+    } catch(e) { showToast(e.message, "error"); }
+    setSimCargando(false);
+  };
+
+  const addIngrediente = () => setNewReceta(r => ({ ...r, ingredientes: [...r.ingredientes, { materia_nombre: "", gramos_base: "" }] }));
+  const updateIng = (i, campo, val) => setNewReceta(r => {
+    const ings = [...r.ingredientes]; ings[i][campo] = val; return { ...r, ingredientes: ings };
+  });
+  const guardarReceta = async (e) => {
+    e.preventDefault();
+    const ings = newReceta.ingredientes.filter(i => i.materia_nombre && i.gramos_base);
+    if (!newReceta.nombre || ings.length === 0) { showToast("Nombre e ingredientes requeridos", "warn"); return; }
+    try {
+      await apiFetch("/recetas", { method: "POST", body: JSON.stringify({ nombre: newReceta.nombre.toUpperCase(), ingredientes: ings.map(i => ({ ...i, gramos_base: parseFloat(i.gramos_base) })) }) });
+      showToast("Receta guardada ✅");
+      setNewReceta({ nombre: "", ingredientes: [{ materia_nombre: "", gramos_base: "" }] });
+      cargarRecetas();
+    } catch(e) { showToast(e.message, "error"); }
+  };
+
+  const addRow = (setter) => setter(p => [...p, { materia_nombre: "", gramos_por_unidad: "" }]);
+  const updRow = (setter, i, campo, val) => setter(p => { const n=[...p]; n[i][campo]=val; return n; });
+  const fmtCop = v => v ? `$ ${Number(v).toLocaleString("es-CO")}` : "—";
+
+  const TablaIngredientes = ({ titulo, color, items, campo }) => (
+    items && items.length > 0 ? (
+      <div>
+        <h5 className={`text-xs font-bold uppercase tracking-wide text-${color}-600 mb-2`}>{titulo}</h5>
+        <table className="w-full text-xs mb-1">
+          <thead className={`bg-${color}-50`}>
+            <tr>
+              <th className="text-left p-2 text-gray-600">Ingrediente</th>
+              <th className="text-right p-2 text-gray-600">Total g</th>
+              <th className="text-right p-2 text-gray-600">En bodega</th>
+              <th className="text-right p-2 text-gray-600">Costo</th>
+              <th className="text-center p-2 text-gray-600">Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(ing => (
+              <tr key={ing.materia} className="border-t border-gray-100">
+                <td className="p-2 capitalize">{ing.materia}</td>
+                <td className="p-2 text-right font-mono">{fmtPeso(ing.total_g)}</td>
+                <td className="p-2 text-right font-mono">{fmtPeso(ing.saldo_g)}</td>
+                <td className="p-2 text-right font-mono">{fmtCop(ing.costo_total)}</td>
+                <td className="p-2 text-center">
+                  {ing.ok ? <span className="alerta-verde">✅ OK</span> : <span className="alerta-roja">❌ Faltan {fmtPeso(ing.faltante_g)}</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    ) : null
+  );
+
+  return (
+    <div className="space-y-5">
+      <h2 className="text-xl font-bold text-gray-800">🍞 Recetas Maestras</h2>
+
+      <div className="flex flex-wrap gap-2 border-b border-gray-200">
+        {[
+          ["lista",    "📋 Mis Recetas"],
+          ["simular",  "🔍 Simulador"],
+          ["extras",   "🥐 Relleno & Decoración"],
+          ["productos","🧾 Tabla de Costos"],
+          ["nueva",    "➕ Nueva Receta"]
+        ].map(([k,v]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`pb-2 px-3 text-sm font-medium border-b-2 transition-colors ${tab===k?"border-yellow-500 text-yellow-600":"border-transparent text-gray-500 hover:text-gray-700"}`}>{v}</button>
+        ))}
+      </div>
+
+      {/* ── LISTA ────────────────────────────────────────────────────────────── */}
+      {tab === "lista" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {recetas.map(r => (
+            <div key={r.id} className="card p-4 hover:shadow-md transition-shadow cursor-pointer"
+              onClick={() => { setSelReceta(r); setTab("simular"); }}>
+              <h3 className="font-bold text-gray-800 mb-1">{r.nombre}</h3>
+              <p className="text-xs text-gray-500 mb-2">Lote base: {fmt(r.peso_total_g)} g</p>
+              <div className="space-y-0.5 mb-2">
+                {r.ingredientes.map((ing, i) => (
+                  <div key={i} className="flex justify-between text-xs text-gray-600">
+                    <span className="capitalize">{ing.nombre}</span>
+                    <span className="font-mono">{fmt(ing.gramos_base)} g</span>
+                  </div>
+                ))}
+              </div>
+              {(r.rellenos?.length > 0 || r.decoraciones?.length > 0) && (
+                <div className="border-t border-gray-100 pt-2 mt-2 space-y-0.5">
+                  {r.rellenos?.map((x,i) => (
+                    <div key={i} className="flex justify-between text-xs text-orange-600">
+                      <span>🥐 {x.nombre}</span><span className="font-mono">{x.gramos_por_unidad} g/und</span>
+                    </div>
+                  ))}
+                  {r.decoraciones?.map((x,i) => (
+                    <div key={i} className="flex justify-between text-xs text-pink-600">
+                      <span>🎂 {x.nombre}</span><span className="font-mono">{x.gramos_por_unidad} g/und</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="mt-3 text-xs text-yellow-600 font-medium">→ Click para simular</div>
+            </div>
+          ))}
+          {recetas.length === 0 && <div className="text-gray-400 col-span-3 text-center py-12">No hay recetas registradas aún.</div>}
+        </div>
+      )}
+
+      {/* ── SIMULADOR ────────────────────────────────────────────────────────── */}
+      {tab === "simular" && (
+        <div className="max-w-2xl space-y-4">
+          {/* Formulario base */}
+          <div className="card p-4 space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Receta</label>
+                <select value={selReceta?.nombre || ""} onChange={e => setSelReceta(recetas.find(r=>r.nombre===e.target.value))}>
+                  <option value="">Selecciona...</option>
+                  {recetas.map(r => <option key={r.id} value={r.nombre}>{r.nombre}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Peso comercial (g)</label>
+                <input type="number" value={simForm.peso_g} onChange={e=>setSimForm(f=>({...f,peso_g:e.target.value}))} min="1"/>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Cantidad (unidades)</label>
+                <input type="number" value={simForm.cantidad} onChange={e=>setSimForm(f=>({...f,cantidad:e.target.value}))} min="1"/>
+              </div>
+            </div>
+
+            {/* Relleno */}
+            <div className="bg-orange-50 rounded-xl p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-orange-700">🥐 Relleno</span>
+                <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer">
+                  <input type="checkbox" checked={usarRelPred} onChange={e=>setUsarRelPred(e.target.checked)}/>
+                  Usar rellenos predefinidos de la receta
+                </label>
+              </div>
+              {!usarRelPred && (
+                <div className="space-y-1">
+                  {relExtra.map((r,i) => (
+                    <div key={i} className="flex gap-2">
+                      <input value={r.materia_nombre} onChange={e=>updRow(setRelExtra,i,"materia_nombre",e.target.value)} placeholder="Ingrediente" className="flex-1 text-xs"/>
+                      <input type="number" value={r.gramos_por_unidad} onChange={e=>updRow(setRelExtra,i,"gramos_por_unidad",e.target.value)} placeholder="g/und" className="w-20 text-xs" min="0.1" step="0.1"/>
+                    </div>
+                  ))}
+                  <button type="button" onClick={()=>addRow(setRelExtra)} className="text-xs text-orange-600 font-medium">+ fila</button>
+                </div>
+              )}
+            </div>
+
+            {/* Decoración */}
+            <div className="bg-pink-50 rounded-xl p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-pink-700">🎂 Decoración</span>
+                <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer">
+                  <input type="checkbox" checked={usarDecPred} onChange={e=>setUsarDecPred(e.target.checked)}/>
+                  Usar decoraciones predefinidas de la receta
+                </label>
+              </div>
+              {!usarDecPred && (
+                <div className="space-y-1">
+                  {decExtra.map((d,i) => (
+                    <div key={i} className="flex gap-2">
+                      <input value={d.materia_nombre} onChange={e=>updRow(setDecExtra,i,"materia_nombre",e.target.value)} placeholder="Ingrediente" className="flex-1 text-xs"/>
+                      <input type="number" value={d.gramos_por_unidad} onChange={e=>updRow(setDecExtra,i,"gramos_por_unidad",e.target.value)} placeholder="g/und" className="w-20 text-xs" min="0.1" step="0.1"/>
+                    </div>
+                  ))}
+                  <button type="button" onClick={()=>addRow(setDecExtra)} className="text-xs text-pink-600 font-medium">+ fila</button>
+                </div>
+              )}
+            </div>
+
+            {/* Descuento bodega */}
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                <input type="checkbox" checked={descontar} onChange={e=>setDescontar(e.target.checked)}/>
+                Descontar relleno y decoración del inventario
+              </label>
+              {descontar && (
+                <input value={responsable} onChange={e=>setResponsable(e.target.value)}
+                  placeholder="Responsable del descuento" className="flex-1 text-sm"/>
+              )}
+            </div>
+
+            <button onClick={simularCompleto} disabled={simCargando} className="brand-btn w-full py-2.5 rounded-lg text-sm font-semibold">
+              {simCargando ? "Calculando…" : "🔍 Simular Pedido Completo"}
+            </button>
+          </div>
+
+          {/* Resultados */}
+          {simResult && (
+            <div className="card p-5 space-y-4">
+              <div className={`text-center py-3 rounded-lg font-semibold ${simResult.viable ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+                {simResult.viable ? "✅ PRODUCCIÓN VIABLE — Inventario suficiente" : "⚠️ ATENCIÓN — Hay faltantes de inventario"}
+              </div>
+
+              {/* KPIs de costo */}
+              <div className="grid grid-cols-4 gap-3 text-center">
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-xs text-gray-500">Masa c/ avería</div>
+                  <div className="font-bold text-sm">{fmtPeso(simResult.masa_con_averia_g)}</div>
+                </div>
+                <div className="bg-amber-50 rounded-lg p-3">
+                  <div className="text-xs text-gray-500">Costo masa/und</div>
+                  <div className="font-bold text-sm text-amber-700">{fmtCop(simResult.masa?.costo_por_unidad)}</div>
+                </div>
+                <div className="bg-orange-50 rounded-lg p-3">
+                  <div className="text-xs text-gray-500">Relleno/und</div>
+                  <div className="font-bold text-sm text-orange-700">{fmtCop(simResult.relleno?.costo_por_unidad)}</div>
+                </div>
+                <div className="bg-pink-50 rounded-lg p-3">
+                  <div className="text-xs text-gray-500">Decoración/und</div>
+                  <div className="font-bold text-sm text-pink-700">{fmtCop(simResult.decoracion?.costo_por_unidad)}</div>
+                </div>
+              </div>
+
+              {/* Costo total */}
+              <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-center">
+                <div className="text-xs text-gray-500 mb-1">💰 COSTO TOTAL POR UNIDAD</div>
+                <div className="text-2xl font-bold text-yellow-700">{fmtCop(simResult.costo_total_por_unidad)}</div>
+              </div>
+
+              {/* Tabla masa */}
+              <details open>
+                <summary className="text-sm font-semibold text-gray-700 cursor-pointer mb-2">Ingredientes de masa</summary>
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="text-left p-2 text-gray-600">Ingrediente</th>
+                      <th className="text-right p-2 text-gray-600">Necesario</th>
+                      <th className="text-right p-2 text-gray-600">En Bodega</th>
+                      <th className="text-right p-2 text-gray-600">Costo</th>
+                      <th className="text-center p-2 text-gray-600">Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {simResult.masa?.ingredientes?.map(ing => (
+                      <tr key={ing.materia} className="border-t border-gray-100">
+                        <td className="p-2 capitalize">{ing.materia}</td>
+                        <td className="p-2 text-right font-mono">{fmtPeso(ing.necesario_g)}</td>
+                        <td className="p-2 text-right font-mono">{fmtPeso(ing.saldo_g)}</td>
+                        <td className="p-2 text-right font-mono">{fmtCop(ing.costo_total)}</td>
+                        <td className="p-2 text-center">{ing.ok ? <span className="alerta-verde">✅ OK</span> : <span className="alerta-roja">❌ Faltan {fmtPeso(ing.faltante_g)}</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </details>
+
+              {/* Tabla relleno */}
+              {simResult.relleno?.ingredientes?.length > 0 && (
+                <details open>
+                  <summary className="text-sm font-semibold text-orange-700 cursor-pointer mb-2">🥐 Relleno</summary>
+                  <TablaIngredientes titulo="" color="orange" items={simResult.relleno.ingredientes} />
+                </details>
+              )}
+
+              {/* Tabla decoración */}
+              {simResult.decoracion?.ingredientes?.length > 0 && (
+                <details open>
+                  <summary className="text-sm font-semibold text-pink-700 cursor-pointer mb-2">🎂 Decoración</summary>
+                  <TablaIngredientes titulo="" color="pink" items={simResult.decoracion.ingredientes} />
+                </details>
+              )}
+
+              {simResult.descuentos_aplicados?.length > 0 && (
+                <div className="bg-green-50 rounded-lg p-3 text-xs text-green-700">
+                  ✅ Descuentos aplicados al inventario: {simResult.descuentos_aplicados.map(d=>`${d.materia} (${d.descontado_g}g)`).join(", ")}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── RELLENO & DECORACIÓN ────────────────────────────────────────────── */}
+      {tab === "extras" && (
+        <GestionExtras recetas={recetas} showToast={showToast}/>
+      )}
+
+      {/* ── TABLA DE COSTOS ─────────────────────────────────────────────────── */}
+      {tab === "productos" && (
+        <TablaProductos showToast={showToast}/>
+      )}
+
+      {/* ── NUEVA RECETA ─────────────────────────────────────────────────────── */}
+      {tab === "nueva" && (
+        <div className="card p-6 max-w-lg">
+          <h3 className="font-semibold text-gray-700 mb-4">Registrar Nueva Receta Maestra</h3>
+          <form onSubmit={guardarReceta} className="space-y-4">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Nombre del Producto</label>
+              <input value={newReceta.nombre} onChange={e=>setNewReceta(r=>({...r,nombre:e.target.value}))} placeholder="Ej: PAN COCO" required/>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Ingredientes del lote base</label>
+              {newReceta.ingredientes.map((ing, i) => (
+                <div key={i} className="grid grid-cols-2 gap-2 mb-2">
+                  <input value={ing.materia_nombre} onChange={e=>updateIng(i,"materia_nombre",e.target.value)} placeholder="Materia prima"/>
+                  <input type="number" value={ing.gramos_base} onChange={e=>updateIng(i,"gramos_base",e.target.value)} placeholder="Gramos lote base" min="1"/>
+                </div>
+              ))}
+              <button type="button" onClick={addIngrediente} className="text-sm text-yellow-600 font-medium mt-1">+ Agregar ingrediente</button>
+            </div>
+            <button type="submit" className="brand-btn px-6 py-2.5 rounded-lg font-semibold text-sm w-full">Guardar Receta</button>
+          </form>
+          <p className="text-xs text-gray-400 mt-3">💡 Después de guardar, ve a la pestaña "Relleno & Decoración" para añadir los extras.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Producción ────────────────────────────────────────────────────────────────
+function Produccion({ showToast }) {
+  const [ordenes, setOrdenes]   = useState([]);
+  const [recetas, setRecetas]   = useState([]);
+  const [sedes,   setSedes]     = useState([]);
+  const [tab,     setTab]       = useState("ordenes");
+  const [newOrden, setNewOrden] = useState({ receta_nombre: "", responsable: "", sedes: [{ sede_nombre: "", peso_g: "", cantidad: "" }] });
+  const [cierreModal, setCierreModal] = useState(null);
+  const [cierreForm, setCierreForm]   = useState({ unidades_real: "", masa_sobrante: "", responsable: "" });
+
+  useEffect(() => {
+    cargarOrdenes();
+    apiFetch("/recetas").then(setRecetas).catch(()=>{});
+    apiFetch("/sedes").then(setSedes).catch(()=>{});
+  }, []);
+
+  const cargarOrdenes = () => {
+    apiFetch("/ordenes").then(setOrdenes).catch(()=>{});
+  };
+
+  const addSede = () => setNewOrden(o => ({ ...o, sedes: [...o.sedes, { sede_nombre: "", peso_g: "", cantidad: "" }] }));
+  const updateSede = (i, campo, val) => setNewOrden(o => {
+    const ss = [...o.sedes]; ss[i][campo] = val; return { ...o, sedes: ss };
+  });
+
+  const lanzarOrden = async (e) => {
+    e.preventDefault();
+    const sedesOk = newOrden.sedes.filter(s => s.sede_nombre && s.peso_g && s.cantidad);
+    if (!newOrden.receta_nombre || sedesOk.length === 0) { showToast("Completa receta y al menos una sede", "warn"); return; }
+    try {
+      const res = await apiFetch("/ordenes", {
+        method: "POST",
+        body: JSON.stringify({
+          receta_nombre: newOrden.receta_nombre,
+          responsable: newOrden.responsable,
+          sedes: sedesOk.map(s => ({ sede_nombre: s.sede_nombre, peso_g: parseFloat(s.peso_g), cantidad: parseInt(s.cantidad) }))
+        })
+      });
+      showToast(`✅ Orden #${res.orden_id} lanzada — ${fmt(res.masa_total_g)}g de masa`);
+      setNewOrden({ receta_nombre: "", responsable: "", sedes: [{ sede_nombre: "", peso_g: "", cantidad: "" }] });
+      cargarOrdenes();
+    } catch(err) { showToast(err.message, "error"); }
+  };
+
+  const cerrarOrden = async () => {
+    if (!cierreModal || !cierreForm.unidades_real) { showToast("Completa los datos", "warn"); return; }
+    try {
+      const res = await apiFetch(`/ordenes/${cierreModal.id}/cerrar`, {
+        method: "PUT",
+        body: JSON.stringify({
+          unidades_real: parseInt(cierreForm.unidades_real),
+          masa_sobrante: parseFloat(cierreForm.masa_sobrante || 0),
+          responsable: cierreForm.responsable
+        })
+      });
+      showToast(`✅ Orden cerrada — ${res.estado_balance}`);
+      setCierreModal(null);
+      cargarOrdenes();
+    } catch(err) { showToast(err.message, "error"); }
+  };
+
+  return (
+    <div className="space-y-5">
+      <h2 className="text-xl font-bold text-gray-800">🏭 Producción</h2>
+
+      <div className="flex gap-2 border-b border-gray-200">
+        {[["ordenes","Tablero de Órdenes"],["lanzar","Lanzar Orden Multisede"]].map(([k,v]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`pb-2 px-3 text-sm font-medium border-b-2 transition-colors ${tab===k?"border-yellow-500 text-yellow-600":"border-transparent text-gray-500"}`}>{v}</button>
+        ))}
+      </div>
+
+      {tab === "ordenes" && (
+        <div className="space-y-3">
+          {ordenes.map(o => (
+            <div key={o.id} className="card p-4">
+              <div className="flex justify-between items-start">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-bold text-gray-800"># {o.id}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${o.estado==="pendiente"?"badge-pendiente":"badge-cerrada"}`}>
+                      {o.estado.toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="text-sm text-gray-600"><span className="font-semibold">{o.receta}</span> — {o.fecha}</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    Masa: {fmtPeso(o.masa_total)} · {fmt(o.unidades_prog)} unidades · Resp: {o.responsable}
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {o.sedes?.map((s,i) => (
+                      <span key={i} className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">
+                        {s.sede_nombre}: {s.cantidad}un de {s.peso_g}g
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {o.estado === "pendiente" && (
+                  <button onClick={() => { setCierreModal(o); setCierreForm({ unidades_real: o.unidades_prog, masa_sobrante: "", responsable: "" }); }}
+                    className="text-sm brand-btn px-4 py-1.5 rounded-lg font-medium ml-4 flex-shrink-0">
+                    Cerrar Orden
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {ordenes.length === 0 && <div className="text-center text-gray-400 py-12">No hay órdenes registradas</div>}
+        </div>
+      )}
+
+      {tab === "lanzar" && (
+        <div className="card p-6 max-w-xl">
+          <h3 className="font-semibold text-gray-700 mb-4">Nueva Orden de Producción Multisede</h3>
+          <form onSubmit={lanzarOrden} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Receta *</label>
+                <select value={newOrden.receta_nombre} onChange={e=>setNewOrden(o=>({...o,receta_nombre:e.target.value}))} required>
+                  <option value="">Selecciona receta...</option>
+                  {recetas.map(r => <option key={r.id} value={r.nombre}>{r.nombre}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Responsable</label>
+                <input value={newOrden.responsable} onChange={e=>setNewOrden(o=>({...o,responsable:e.target.value}))} placeholder="Supervisor"/>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-2 block font-medium">Pedidos por Sede</label>
+              {newOrden.sedes.map((s, i) => (
+                <div key={i} className="grid grid-cols-3 gap-2 mb-2">
+                  <select value={s.sede_nombre} onChange={e=>updateSede(i,"sede_nombre",e.target.value)}>
+                    <option value="">Sede...</option>
+                    {sedes.map(sd => <option key={sd.id} value={sd.nombre}>{sd.nombre}</option>)}
+                  </select>
+                  <input type="number" value={s.peso_g} onChange={e=>updateSede(i,"peso_g",e.target.value)} placeholder="Peso (g)"/>
+                  <input type="number" value={s.cantidad} onChange={e=>updateSede(i,"cantidad",e.target.value)} placeholder="Cantidad"/>
+                </div>
+              ))}
+              <button type="button" onClick={addSede} className="text-sm text-yellow-600 font-medium">+ Agregar sede</button>
+            </div>
+            <button type="submit" className="brand-btn w-full py-2.5 rounded-lg font-semibold text-sm">
+              🚀 Lanzar Orden de Producción
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Modal cierre */}
+      {cierreModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="card p-6 w-full max-w-md">
+            <h3 className="font-bold text-lg mb-4">Cerrar Orden #{cierreModal.id} — {cierreModal.receta}</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Unidades producidas realmente</label>
+                <input type="number" value={cierreForm.unidades_real} onChange={e=>setCierreForm(f=>({...f,unidades_real:e.target.value}))}/>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Masa sobrante en mesa (g)</label>
+                <input type="number" value={cierreForm.masa_sobrante} onChange={e=>setCierreForm(f=>({...f,masa_sobrante:e.target.value}))} placeholder="0"/>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Responsable del cierre</label>
+                <input value={cierreForm.responsable} onChange={e=>setCierreForm(f=>({...f,responsable:e.target.value}))}/>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button onClick={cerrarOrden} className="brand-btn flex-1 py-2 rounded-lg font-semibold text-sm">Confirmar Cierre</button>
+                <button onClick={()=>setCierreModal(null)} className="flex-1 py-2 rounded-lg border text-sm text-gray-600">Cancelar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Reportes ──────────────────────────────────────────────────────────────────
+function Reportes({ showToast }) {
+  const [prodData,  setProdData]  = useState([]);
+  const [despData,  setDespData]  = useState([]);
+  const [tab,       setTab]       = useState("produccion");
+
+  useEffect(() => {
+    apiFetch("/reportes/produccion").then(setProdData).catch(()=>{});
+    apiFetch("/reportes/despachos-sede").then(setDespData).catch(()=>{});
+  }, []);
+
+  const totalUnidades  = prodData.reduce((s,r) => s + (r.unidades_real||0), 0);
+  const totalMerma     = prodData.reduce((s,r) => s + (r.merma_g||0), 0);
+
+  return (
+    <div className="space-y-5">
+      <h2 className="text-xl font-bold text-gray-800">📊 Reportes</h2>
+
+      <div className="flex gap-2 border-b border-gray-200">
+        {[["produccion","Producción Terminada"],["despachos","Despachos por Sede"]].map(([k,v]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`pb-2 px-3 text-sm font-medium border-b-2 transition-colors ${tab===k?"border-yellow-500 text-yellow-600":"border-transparent text-gray-500"}`}>{v}</button>
+        ))}
+      </div>
+
+      {tab === "produccion" && (
+        <>
+          <div className="grid grid-cols-3 gap-4">
+            <KpiCard icon="🍞" label="Total Producido (histórico)" value={fmt(totalUnidades) + " un"}/>
+            <KpiCard icon="⚠️" label="Merma Total"                 value={fmtPeso(totalMerma)} color="#ef4444"/>
+            <KpiCard icon="📋" label="Lotes Registrados"           value={prodData.length}/>
+          </div>
+          <div className="card overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-gray-600">
+                <tr>
+                  <th className="text-left p-3">Fecha/Hora</th>
+                  <th className="text-left p-3">Receta</th>
+                  <th className="text-right p-3">Prog.</th>
+                  <th className="text-right p-3">Real</th>
+                  <th className="text-right p-3">Sobrante</th>
+                  <th className="text-right p-3">Merma</th>
+                  <th className="text-left p-3">Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {prodData.map((r,i) => (
+                  <tr key={i} className="table-row border-t border-gray-100">
+                    <td className="p-3 text-gray-600 text-xs">{r.fecha_cierre}</td>
+                    <td className="p-3 font-medium text-gray-800">{r.receta_nombre}</td>
+                    <td className="p-3 text-right">{fmt(r.unidades_prog)}</td>
+                    <td className="p-3 text-right font-semibold">{fmt(r.unidades_real)}</td>
+                    <td className="p-3 text-right text-gray-600">{fmtPeso(r.masa_sobrante)}</td>
+                    <td className="p-3 text-right text-red-600">{fmtPeso(r.merma_g)}</td>
+                    <td className="p-3 text-xs text-gray-600">{r.estado_balance}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {tab === "despachos" && (
+        <div className="card overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-gray-600">
+              <tr>
+                <th className="text-left p-3">Fecha</th>
+                <th className="text-left p-3">Sede</th>
+                <th className="text-left p-3">Receta</th>
+                <th className="text-right p-3">Unidades</th>
+                <th className="text-right p-3">Masa Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {despData.map((d,i) => (
+                <tr key={i} className="table-row border-t border-gray-100">
+                  <td className="p-3 text-gray-600">{d.fecha}</td>
+                  <td className="p-3 font-medium">{d.sede_nombre}</td>
+                  <td className="p-3 text-gray-700">{d.receta}</td>
+                  <td className="p-3 text-right font-semibold">{fmt(d.total_unidades)}</td>
+                  <td className="p-3 text-right text-gray-600">{fmtPeso(d.masa_total_g)}</td>
+                </tr>
+              ))}
+              {despData.length === 0 && <tr><td colSpan={5} className="text-center text-gray-400 p-8">Sin despachos registrados</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Configuración ─────────────────────────────────────────────────────────────
+function Configuracion({ showToast, onConfigChange }) {
+  const [cfg, setCfg]       = useState({});
+  const [loading, setLoad]  = useState(false);
+  const [apiUrl, setApiUrl2]= useState(localStorage.getItem("api_url") || "");
+
+  useEffect(() => {
+    apiFetch("/config").then(d => {
+      setCfg(d);
+      if (d.color_primario) setColor(d.color_primario);
+      if (d.empresa_nombre) localStorage.setItem("empresa_nombre", d.empresa_nombre);
+      if (d.empresa_logo)   localStorage.setItem("empresa_logo",   d.empresa_logo);
+    }).catch(()=>{});
+  }, []);
+
+  const guardar = async (clave, valor) => {
+    setLoad(true);
+    try {
+      await apiFetch("/config", { method: "PUT", body: JSON.stringify({ clave, valor }) });
+      setCfg(c => ({ ...c, [clave]: valor }));
+      if (clave === "color_primario") setColor(valor);
+      if (clave === "empresa_nombre") localStorage.setItem("empresa_nombre", valor);
+      if (clave === "empresa_logo")   localStorage.setItem("empresa_logo",   valor);
+      showToast("Configuración guardada ✅");
+      if (onConfigChange) onConfigChange();
+    } catch(err) { showToast(err.message, "error"); } finally { setLoad(false); }
+  };
+
+  return (
+    <div className="space-y-6 max-w-lg">
+      <h2 className="text-xl font-bold text-gray-800">⚙️ Configuración</h2>
+
+      <div className="card p-5 space-y-4">
+        <h3 className="font-semibold text-gray-700">🏢 Identidad de la Empresa</h3>
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">Nombre de la empresa</label>
+          <div className="flex gap-2">
+            <input value={cfg.empresa_nombre||""} onChange={e=>setCfg(c=>({...c,empresa_nombre:e.target.value}))}
+              placeholder="Natas Panadería"/>
+            <button onClick={()=>guardar("empresa_nombre", cfg.empresa_nombre)}
+              className="brand-btn px-4 rounded-lg text-sm font-medium flex-shrink-0">Guardar</button>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">URL del Logo (pega el link de tu imagen)</label>
+          <div className="flex gap-2">
+            <input value={cfg.empresa_logo||""} onChange={e=>setCfg(c=>({...c,empresa_logo:e.target.value}))}
+              placeholder="https://... o ruta del logo"/>
+            <button onClick={()=>guardar("empresa_logo", cfg.empresa_logo)}
+              className="brand-btn px-4 rounded-lg text-sm font-medium flex-shrink-0">Guardar</button>
+          </div>
+          {cfg.empresa_logo && <img src={cfg.empresa_logo} alt="Preview" className="h-16 mt-2 object-contain rounded-lg border" onError={e=>e.target.style.display="none"}/>}
+        </div>
+      </div>
+
+      <div className="card p-5 space-y-4">
+        <h3 className="font-semibold text-gray-700">🎨 Personalización Visual</h3>
+        <div>
+          <label className="text-xs text-gray-500 mb-2 block">Color principal de la marca</label>
+          <div className="flex items-center gap-3">
+            <input type="color" value={cfg.color_primario||"#f59e0b"}
+              onChange={e=>setCfg(c=>({...c,color_primario:e.target.value}))}
+              className="h-10 w-16 rounded cursor-pointer p-1"/>
+            <span className="text-sm text-gray-600">{cfg.color_primario||"#f59e0b"}</span>
+            <button onClick={()=>guardar("color_primario", cfg.color_primario)}
+              className="brand-btn px-4 py-2 rounded-lg text-sm font-medium">Aplicar Color</button>
+          </div>
+          <div className="flex gap-2 mt-3">
+            {["#f59e0b","#ef4444","#3b82f6","#22c55e","#8b5cf6","#1a1a2e","#ec4899"].map(c => (
+              <div key={c} className="w-8 h-8 rounded-full cursor-pointer border-2 border-white shadow"
+                style={{background:c}} onClick={()=>{ setCfg(f=>({...f,color_primario:c})); guardar("color_primario",c); }}/>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="card p-5 space-y-2">
+        <h3 className="font-semibold text-gray-700 mb-3">📱 Instalar en Móvil (PWA)</h3>
+        <p className="text-sm text-gray-600">Abre esta página en Chrome en tu celular y toca el botón <strong>"Agregar a pantalla de inicio"</strong>. La app funciona sin internet para consultas básicas.</p>
+        <div className="bg-amber-50 p-3 rounded-lg text-sm text-amber-800 mt-2">
+          ⭐ La app se instala como si fuera nativa — sin Play Store ni App Store.
+        </div>
+      </div>
+
+      <div className="card p-5 space-y-3">
+        <h3 className="font-semibold text-gray-700">🔗 Conexión al Backend</h3>
+        <p className="text-xs text-gray-500">URL actual: <code className="bg-gray-100 px-1 rounded text-xs">{getAPI()}</code></p>
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">Cambiar URL del Backend (Render.com)</label>
+          <div className="flex gap-2">
+            <input value={apiUrl} onChange={e => setApiUrl2(e.target.value)} placeholder="https://mi-api.onrender.com"/>
+            <button onClick={() => {
+              setApiUrl(apiUrl);
+              showToast("URL del backend actualizada ✅");
+              if (onConfigChange) onConfigChange();
+            }} className="brand-btn px-4 rounded-lg text-sm font-medium flex-shrink-0">Guardar</button>
+          </div>
+        </div>
+        <button onClick={() => { localStorage.removeItem("api_url"); showToast("URL eliminada — recarga la app para reconfigurar", "warn"); }}
+          className="text-xs text-red-500 underline">Restablecer configuración de backend</button>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="font-semibold text-gray-700 mb-2">💡 Datos de acceso por defecto</h3>
+        <div className="bg-gray-50 rounded-lg p-3 text-sm font-mono space-y-1">
+          <div>Email: <span className="text-blue-600">admin@panaderia.com</span></div>
+          <div>Clave: <span className="text-blue-600">admin123</span></div>
+        </div>
+        <p className="text-xs text-gray-400 mt-2">Cambia estas credenciales antes de compartir el sistema.</p>
+      </div>
+    </div>
+  );
+}
+
+// ── App Principal ─────────────────────────────────────────────────────────────
+function App() {
+  const [usuario,  setUsuario]  = useState(() => {
+    try { return JSON.parse(localStorage.getItem("usuario")); } catch { return null; }
+  });
+  const [pagina,   setPagina]   = useState("dashboard");
+  const [toast,    setToast]    = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [refresh,  setRefresh]  = useState(0);
+  const [setupDone, setSetupDone] = useState(hasApiUrl);
+
+  const color  = getColor();
+  const logo   = getLogo();
+  const nombre = getNombre();
+
+  document.documentElement.style.setProperty("--color-primary", color);
+  document.documentElement.style.setProperty("--color-dark", "#1a1a2e");
+
+  const showToast = (msg, tipo = "ok") => setToast({ msg, tipo });
+
+  const logout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("usuario");
+    setUsuario(null);
+  };
+
+  if (!setupDone) return <SetupBackend onDone={() => setSetupDone(true)}/>;
+  if (!usuario)   return <Login onLogin={u => { setUsuario(u); setPagina("dashboard"); }}/>;
+
+  const navItems = [
+    { key: "dashboard",  icon: "📊", label: "Dashboard" },
+    { key: "bodega",     icon: "📦", label: "Bodega" },
+    { key: "recetas",    icon: "🍞", label: "Recetas" },
+    { key: "produccion", icon: "🏭", label: "Producción" },
+    { key: "reportes",   icon: "📋", label: "Reportes" },
+    { key: "config",     icon: "⚙️", label: "Configuración" },
+  ];
+
+  const renderPage = () => {
+    switch(pagina) {
+      case "dashboard":  return <Dashboard key={refresh}/>;
+      case "bodega":     return <Bodega showToast={showToast}/>;
+      case "recetas":    return <Recetas showToast={showToast}/>;
+      case "produccion": return <Produccion showToast={showToast}/>;
+      case "reportes":   return <Reportes showToast={showToast}/>;
+      case "config":     return <Configuracion showToast={showToast} onConfigChange={() => setRefresh(r=>r+1)}/>;
+      default:           return null;
+    }
+  };
+
+  return (
+    <div className="flex h-screen overflow-hidden">
+
+      {menuOpen && <div className="fixed inset-0 bg-black/40 z-40 md:hidden" onClick={() => setMenuOpen(false)}/>}
+
+      <aside className={`sidebar brand-bg text-white w-56 flex-shrink-0 flex flex-col py-4 px-3 md:relative md:left-0 ${menuOpen ? "open" : ""}`}>
+        <div className="flex items-center gap-3 px-2 mb-6">
+          {logo
+            ? <img src={logo} alt="Logo" className="h-10 w-10 object-contain rounded-lg bg-white p-1"/>
+            : <div className="text-3xl">🍞</div>
+          }
+          <div>
+            <div className="font-bold text-sm leading-tight">{nombre}</div>
+            <div className="text-xs opacity-60">Producción</div>
+          </div>
+        </div>
+
+        <nav className="flex-1 space-y-1">
+          {navItems.map(item => (
+            <div key={item.key}
+              className={`nav-item text-sm ${pagina === item.key ? "active" : "text-gray-300"}`}
+              onClick={() => { setPagina(item.key); setMenuOpen(false); }}>
+              <span>{item.icon}</span>
+              <span>{item.label}</span>
+            </div>
+          ))}
+        </nav>
+
+        <div className="mt-4 px-2 border-t border-white/10 pt-4">
+          <div className="text-xs text-gray-400 mb-1">{usuario.nombre}</div>
+          <div className="text-xs text-gray-500 mb-3 capitalize">{usuario.rol}{usuario.sede_nombre ? ` · ${usuario.sede_nombre}` : ""}</div>
+          <button onClick={logout}
+            className="w-full text-left text-xs text-gray-400 hover:text-white py-1 flex items-center gap-2">
+            <span>↩</span> Cerrar sesión
+          </button>
+        </div>
+      </aside>
+
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between flex-shrink-0">
+          <button className="md:hidden text-gray-600 text-xl" onClick={() => setMenuOpen(m => !m)}>☰</button>
+          <h1 className="font-semibold text-gray-800 text-sm md:text-base capitalize">{navItems.find(n=>n.key===pagina)?.label || pagina}</h1>
+          <div className="text-xs text-gray-400 hidden md:block">{new Date().toLocaleDateString("es-CO", { weekday:"long", year:"numeric", month:"long", day:"numeric" })}</div>
+        </header>
+
+        <main className="flex-1 overflow-auto p-4 md:p-6">
+          {renderPage()}
+        </main>
+      </div>
+
+      {toast && <Toast msg={toast.msg} tipo={toast.tipo} onClose={() => setToast(null)}/>}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
+</script>
+</body>
+</html>
