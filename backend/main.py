@@ -114,6 +114,18 @@ def init_db():
     conn.commit()
     conn.close()
 
+# Inicializar DB al arrancar
+init_db()
+
+# ── Health check ───────────────────────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok", "version": "1.2.0"}
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok", "version": "1.2.0"}
+
 # ── Auth ───────────────────────────────────────────────────────────────────────
 def crear_token(user_id: int, rol: str, sede_id: Optional[int] = None) -> str:
     payload = {
@@ -1127,6 +1139,6 @@ def reporte_pareto(
             "vitales_count": len(vitales),
             "triviales_count": len(triviales),
             "vitales_pct_items": round(len(vitales) / len(resultado) * 100, 1) if resultado else 0,
-            "vitales": vitales
+            "vitales": [r["item"] for r in resultado if r["es_vital"]]
         }
     }
