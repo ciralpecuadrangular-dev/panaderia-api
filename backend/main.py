@@ -1109,4 +1109,24 @@ def reporte_pareto(
         pct_acum = round(acumulado / total * 100, 2)
         resultado.append({
             "item": i["item"],
-            "valor": round
+            "valor": round(i["valor"], 1),
+            "porcentaje": pct,
+            "porcentaje_acumulado": pct_acum,
+            "es_vital": pct_acum <= 80
+        })
+
+    vitales = [r["item"] for r in resultado if r["es_vital"]]
+    triviales = [r for r in resultado if not r["es_vital"]]
+
+    return {
+        "tipo": tipo,
+        "unidad": unidad,
+        "total": round(total, 1),
+        "items": resultado,
+        "resumen": {
+            "vitales_count": len(vitales),
+            "triviales_count": len(triviales),
+            "vitales_pct_items": round(len(vitales) / len(resultado) * 100, 1) if resultado else 0,
+            "vitales": vitales
+        }
+    }
